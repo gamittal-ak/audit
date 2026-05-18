@@ -1,0 +1,56 @@
+services:
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  fastapi:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./reports:/app/reports
+      - ${HOME}/.edgerc:/run/secrets/edgerc:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./reports:/app/reports
+      - ${HOME}/.edgerc:/run/secrets/edgerc:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  nginx:
+    build:
+      context: docker/nginx
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8281:80"
+    volumes:
+      - ./app/static:/static:ro
+    depends_on:
+      - fastapi
+
+volumes:
+  redis_data:

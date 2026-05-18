@@ -1,0 +1,15 @@
+[Unit]
+Description=Akamai Audit Tool (Docker Compose)
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/akamai-audit
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose stop
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

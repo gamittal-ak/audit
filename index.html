@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% block title %}Search — Akamai Audit Tool{% endblock %}
+
+{% block content %}
+<div class="row">
+  <div class="col-lg-7">
+
+    <h2 class="mb-1 fw-bold">Account Search</h2>
+    <p class="text-muted mb-4">Type at least 3 characters of the account name to search.</p>
+
+    <div class="card shadow-sm mb-4">
+      <div class="card-body">
+        <label class="form-label fw-semibold">Account Name</label>
+        <input
+          id="search-input"
+          type="text"
+          class="form-control form-control-lg"
+          placeholder="e.g. DIRECTV"
+          hx-get="/api/accounts/search"
+          hx-trigger="keyup changed delay:400ms"
+          hx-target="#results"
+          hx-indicator="#spinner"
+          name="q"
+          autocomplete="off"
+        >
+        <span id="spinner" class="htmx-indicator text-muted small mt-1 d-block">
+          <span class="spinner-border spinner-border-sm me-1"></span> Searching…
+        </span>
+      </div>
+    </div>
+
+    <div id="results"></div>
+
+  </div>
+
+  {# Recent reports tracker — loads immediately, polls while any task is running #}
+  <div class="col-lg-5">
+    <div
+      id="task-list"
+      hx-get="/api/tasks/recent"
+      hx-trigger="load"
+      hx-target="#task-list"
+      hx-swap="outerHTML"
+    >
+      <p class="text-muted small">Loading recent reports…</p>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Restore task list filters after any htmx swap of the task list
+  document.body.addEventListener("htmx:afterSwap", function(evt) {
+    if (evt.detail.target.id === "task-list") {
+      restoreFilters();
+    }
+    if (evt.detail.target.id !== "results") return;
+    try {
+      const data = JSON.parse(evt.detail.xhr.responseText);
+      renderResults(data);
+    } catch(e) {}
+  });
+
+  // ---- Task list filter & management functions ----
+  function restoreFilters() {
+    const acctEl = document.getElementById('filter-account');
+    const statusEl = document.getElementById('filter-status');
+    const groupEl = document.getElementById('group-by');
+    if (!statusEl) return;
+    acctEl.value = sessionStorage.getItem('tl_acct') || '';
+    statusEl.value = sessionStorage.getItem('tl_status') || '';
+    groupEl.value = sessionStorage.getItem('tl_groupby') || '';
+    if (acctEl.value || statusEl.value || groupEl.value) applyFilters();
+  }
+
+  function applyFilters() {
+    const acctEl = document.getElementById('filter-account');
+    const statusEl = document.getElementById('filter-status');
+    const groupEl = document.getElementById('group-by');
+    if (!statusEl) return;
+    const acctFilter = (acctEl.value || '').toLowerCase();
+    const statusFilter = statusEl.value;
+    const groupBy = groupEl.value;
+    sessionStorage.setItem('tl_acct', acctEl.value || '');
+    sessionStorage.setItem('tl_status', statusFilter);
+    sessionStorage.setItem('tl_groupby', groupBy);
+
+    document.querySelectorAll('.group-header').forEach(h => h.remove());
+    const items = document.querySelectorAll('.task-item');
+    let visible = 0;
+    items.forEach(el => {
+      const acct = (el.dataset.account || '').toLowerCase();
+      const status = el.dataset.status || '';
+      const show = (!acctFilter || acct.includes(acctFilter)) && (!statusFilter || status === statusFilter);
+      el.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    const noMatch = document.getElementById('no-match');
+    if (noMatch) noMatch.classList.toggle('d-none', visible > 0);
+
+    if (groupBy && visible > 0) {
+      const container = document.getElementById('task-items');
+      const visibleItems = [...items].filter(el => el.style.display !== 'none');
+      const groups = {};
+      visibleItems.forEach(el => {
+        let key = groupBy === 'account' ? el.dataset.account
+                : groupBy === 'status' ? el.dataset.status
+                : (el.dataset.date || '').split(' ')[0] || 'Unknown';
+        (groups[key] = groups[key] || []).push(el);
+      });
+      Object.keys(groups).sort().forEach(key => {
+        const h = document.createElement('div');
+        h.className = 'group-header fw-bold text-muted small mt-3 mb-1 border-bottom pb-1';
+        h.textContent = key;
+        container.appendChild(h);
+        groups[key].forEach(el => container.appendChild(el));
+      });
+    }
+  }
+
+  function toggleSelectAll(cb) {
+    document.querySelectorAll('.task-cb').forEach(c => {
+      if (c.closest('.task-item').style.display !== 'none') c.checked = cb.checked;
+    });
+    updateDeleteBtn();
+  }
+
+  function updateDeleteBtn() {
+    const checked = document.querySelectorAll('.task-cb:checked').length;
+    const btn = document.getElementById('btn-delete-sel');
+    if (btn) {
+      btn.disabled = checked === 0;
+      btn.innerHTML = `<i class="bi bi-trash me-1"></i>Delete` + (checked > 0 ? ` (${checked})` : '');
+    }
+  }
+
+  function getSelectedIds() {
+    return [...document.querySelectorAll('.task-cb:checked')].map(c => c.value);
+  }
+
+  function deleteSingle(taskId) {
+    if (!confirm('Delete this report?')) return;
+    fetch(`/api/tasks/${taskId}`, {method:'DELETE'})
+      .then(() => htmx.ajax('GET', '/api/tasks/recent', {target:'#task-list', swap:'outerHTML'}));
+  }
+
+  function deleteSelected() {
+    const ids = getSelectedIds();
+    if (!ids.length) return;
+    if (!confirm(`Delete ${ids.length} report(s)?`)) return;
+    fetch('/api/tasks/delete-selected', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({task_ids:ids})
+    }).then(() => htmx.ajax('GET', '/api/tasks/recent', {target:'#task-list', swap:'outerHTML'}));
+  }
+
+  function deleteAll() {
+    if (!confirm('Delete ALL reports? This cannot be undone.')) return;
+    fetch('/api/tasks/delete-all', {method:'POST'})
+      .then(() => htmx.ajax('GET', '/api/tasks/recent', {target:'#task-list', swap:'outerHTML'}));
+  }
+
+  function renderResults(accounts) {
+    const container = document.getElementById("results");
+    if (!accounts || accounts.length === 0) {
+      container.innerHTML = '<p class="text-muted">No accounts found.</p>';
+      return;
+    }
+    let html = `<p class="text-muted small mb-2">${accounts.length} account(s) found</p>
+      <div class="list-group">`;
+    accounts.forEach(a => {
+      html += `
+        <div class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <div class="fw-semibold">${escHtml(a.accountName)}</div>
+            <small class="text-muted font-monospace">${escHtml(a.accountSwitchKey)}</small>
+          </div>
+          <form method="post" action="/api/reports" class="d-flex align-items-center gap-2">
+            <input type="hidden" name="switch_key" value="${escHtml(a.accountSwitchKey)}">
+            <input type="hidden" name="account_name" value="${escHtml(a.accountName)}">
+            <select name="traffic_days" class="form-select form-select-sm" style="width:auto">
+              <option value="15" selected>15 days</option>
+              <option value="30">30 days</option>
+              <option value="90">90 days</option>
+            </select>
+            <button type="submit" class="btn btn-primary btn-sm">
+              <i class="bi bi-play-fill me-1"></i>Run Report
+            </button>
+          </form>
+        </div>`;
+    });
+    html += "</div>";
+    container.innerHTML = html;
+  }
+
+  function escHtml(str) {
+    return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,107 @@
+<div
+  id="task-list"
+  hx-get="/api/tasks/recent"
+  {% if any_running %}hx-trigger="every 5s"{% else %}hx-trigger="none"{% endif %}
+  hx-target="#task-list"
+  hx-swap="outerHTML"
+>
+{% if tasks %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h5 class="fw-semibold mb-0">
+    <i class="bi bi-clock-history me-2 text-secondary"></i>Recent Reports
+    {% if any_running %}
+    <span class="spinner-border spinner-border-sm text-primary ms-2" role="status"></span>
+    {% endif %}
+  </h5>
+  <div class="btn-group btn-group-sm">
+    <button class="btn btn-outline-danger" onclick="deleteSelected()" id="btn-delete-sel" disabled title="Delete selected">
+      <i class="bi bi-trash me-1"></i>Delete
+    </button>
+    <button class="btn btn-outline-danger" onclick="deleteAll()" title="Delete all reports">
+      <i class="bi bi-trash-fill me-1"></i>All
+    </button>
+  </div>
+</div>
+
+{# --- Filters --- #}
+<div class="mb-3">
+  <div class="input-group input-group-sm mb-2">
+    <span class="input-group-text"><i class="bi bi-funnel"></i></span>
+    <input type="text" class="form-control" id="filter-account" placeholder="Filter by account…" oninput="applyFilters()">
+  </div>
+  <div class="d-flex gap-2 flex-wrap">
+    <select class="form-select form-select-sm" style="width:auto" id="filter-status" onchange="applyFilters()">
+      <option value="">All statuses</option>
+      <option value="SUCCESS">Done</option>
+      <option value="PROGRESS">Running</option>
+      <option value="FAILURE">Failed</option>
+      <option value="PENDING">Queued</option>
+      <option value="REVOKED">Cancelled</option>
+    </select>
+    <select class="form-select form-select-sm" style="width:auto" id="group-by" onchange="applyFilters()">
+      <option value="">No grouping</option>
+      <option value="account">Group by account</option>
+      <option value="status">Group by status</option>
+      <option value="date">Group by date</option>
+    </select>
+    <label class="form-check-label ms-auto d-flex align-items-center gap-1" style="font-size:0.85rem">
+      <input type="checkbox" class="form-check-input" id="select-all" onchange="toggleSelectAll(this)"> Select all
+    </label>
+  </div>
+</div>
+
+<div id="task-items">
+  {% for t in tasks %}
+  <div
+    class="task-item list-group-item list-group-item-action py-2 d-flex align-items-start gap-2"
+    data-task-id="{{ t.task_id }}"
+    data-account="{{ t.account_name }}"
+    data-status="{{ 'REVOKED' if t.cancelled else t.state }}"
+    data-date="{{ t.started_at }}"
+    style="border-left:3px solid {% if t.state == 'SUCCESS' %}#198754{% elif t.state in ('PROGRESS','STARTED') %}#0d6efd{% elif t.state == 'FAILURE' %}#dc3545{% elif t.cancelled or t.state == 'REVOKED' %}#ffc107{% else %}#6c757d{% endif %}"
+  >
+    <input type="checkbox" class="form-check-input task-cb mt-1" value="{{ t.task_id }}" onchange="updateDeleteBtn()">
+    <a href="/report/{{ t.task_id }}" class="text-decoration-none flex-grow-1 text-body">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <span class="fw-semibold">{{ t.account_name }}</span>
+          <small class="text-muted ms-2">{{ t.started_at }}</small>
+        </div>
+        {% if t.cancelled %}
+          <span class="badge bg-warning text-dark">Cancelled</span>
+        {% elif t.state == "SUCCESS" %}
+          <span class="badge bg-success">Done</span>
+        {% elif t.state == "FAILURE" %}
+          <span class="badge bg-danger">Failed</span>
+        {% elif t.state == "REVOKED" %}
+          <span class="badge bg-warning text-dark">Cancelled</span>
+        {% elif t.state in ("PROGRESS", "STARTED") %}
+          <span class="badge bg-primary">{{ t.pct }}%</span>
+        {% else %}
+          <span class="badge bg-secondary">Queued</span>
+        {% endif %}
+      </div>
+      {% if t.state in ("PROGRESS", "STARTED") %}
+      <div class="progress mt-1" style="height:4px">
+        <div class="progress-bar bg-primary" style="width:{{ t.pct }}%"></div>
+      </div>
+      <small class="text-muted">{{ t.step }}</small>
+      {% endif %}
+    </a>
+    <button class="btn btn-sm btn-outline-secondary border-0 p-0 ms-1" onclick="event.preventDefault();deleteSingle('{{ t.task_id }}')" title="Delete">
+      <i class="bi bi-x-lg"></i>
+    </button>
+  </div>
+  {% endfor %}
+</div>
+
+<div id="no-match" class="text-muted small mt-2 d-none">No reports match the current filter.</div>
+
+
+{% else %}
+<h5 class="fw-semibold mb-3">
+  <i class="bi bi-clock-history me-2 text-secondary"></i>Recent Reports
+</h5>
+<p class="text-muted small">No recent reports.</p>
+{% endif %}
+</div>

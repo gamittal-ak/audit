@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Report — Akamai Audit Tool{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-xl-11">
+
+    <div class="d-flex align-items-center mb-4 gap-3">
+      <a href="/" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left me-1"></i>Back
+      </a>
+      <h2 class="mb-0 fw-bold">Report</h2>
+    </div>
+
+    {# This div is replaced by HTMX polling — starts as progress, ends as report view #}
+    <div
+      id="report-content"
+      hx-get="/api/reports/{{ task_id }}/status"
+      hx-trigger="every 2s"
+      hx-target="#report-content"
+      hx-swap="outerHTML"
+    >
+      {# Initial state while page first loads #}
+      <div class="card shadow-sm p-4 text-center">
+        <div class="spinner-border text-primary mx-auto mb-3" role="status"></div>
+        <p class="text-muted mb-0">Connecting to Akamai APIs…</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}

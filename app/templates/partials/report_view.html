@@ -1,0 +1,538 @@
+{# No hx-* attributes — polling stops once this is swapped in #}
+<div id="report-content">
+
+  {# ---- top bar ---- #}
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4">
+    <div>
+      <h4 class="mb-0 fw-bold">{{ account_name }}</h4>
+      <span class="text-muted small">Report complete</span>
+    </div>
+    <a
+      href="/api/reports/{{ task_id }}/download/xlsx"
+      class="btn btn-success"
+      download
+    >
+      <i class="bi bi-file-earmark-excel me-2"></i>Download Excel
+    </a>
+  </div>
+
+  {# ---- summary cards ---- #}
+  {% set total_props    = report | map(attribute='properties') | sum(start=[]) | length %}
+  {% set all_props      = report | map(attribute='properties') | sum(start=[]) %}
+  {% set total_cpcodes  = all_props | map(attribute='cpcodes')  | sum(start=[]) | list | length %}
+  {% set total_hostnames= all_props | map(attribute='hostnames') | sum(start=[]) | list | length %}
+
+  {# compute traffic aggregates #}
+  {% set ns = namespace(total_edge=0.0, total_origin=0.0, offload_sum=0.0, offload_count=0, expiring_certs=0) %}
+  {% for prop in all_props %}
+    {% for entry in prop.cpcodes %}
+      {% if entry.traffic and entry.traffic.edgeBytes %}
+        {% set ns.total_edge = ns.total_edge + entry.traffic.edgeBytes %}
+        {% set ns.total_origin = ns.total_origin + (entry.traffic.originBytes or 0) %}
+      {% endif %}
+      {% if entry.traffic and entry.traffic.bytesOffload is defined and entry.traffic.bytesOffload %}
+        {% set ns.offload_sum = ns.offload_sum + entry.traffic.bytesOffload %}
+        {% set ns.offload_count = ns.offload_count + 1 %}
+      {% endif %}
+    {% endfor %}
+    {% if prop.cert_expiry_days is defined and prop.cert_expiry_days is not none and prop.cert_expiry_days <= 30 %}
+      {% set ns.expiring_certs = ns.expiring_certs + 1 %}
+    {% endif %}
+  {% endfor %}
+  {% set avg_offload = (ns.offload_sum / ns.offload_count) if ns.offload_count > 0 else 0 %}
+
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-md-2">
+      <div class="card text-center shadow-sm h-100">
+        <div class="card-body py-3">
+          <div class="display-6 fw-bold text-primary">{{ report | length }}</div>
+          <div class="text-muted small">Groups</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card text-center shadow-sm h-100">
+        <div class="card-body py-3">
+          <div class="display-6 fw-bold text-info">{{ all_props | length }}</div>
+          <div class="text-muted small">Properties</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card text-center shadow-sm h-100">
+        <div class="card-body py-3">
+          <div class="display-6 fw-bold text-warning">{{ total_cpcodes }}</div>
+          <div class="text-muted small">CP Codes</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card text-center shadow-sm h-100">
+        <div class="card-body py-3">
+          <div class="display-6 fw-bold text-success">{{ total_hostnames }}</div>
+          <div class="text-muted small">Hostnames</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card text-center shadow-sm h-100">
+        <div class="card-body py-3">
+          <div class="display-6 fw-bold" style="color:#0d9488">{{ "%.1f"|format(ns.total_edge) }} GB</div>
+          <div class="text-muted small">Total Edge Traffic</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card text-center shadow-sm h-100">
+        <div class="card-body py-3">
+          <div class="display-6 fw-bold {% if avg_offload >= 90 %}text-success{% elif avg_offload >= 70 %}text-warning{% else %}text-danger{% endif %}">{{ "%.1f"|format(avg_offload) }}%</div>
+          <div class="text-muted small">Avg Offload</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ---- cert expiry warnings (collapsible section) ---- #}
+  {% if ns.expiring_certs > 0 %}
+  <div class="mb-4">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <h6 class="fw-bold mb-0"><i class="bi bi-shield-exclamation me-2" style="color:#FF8C00"></i>Certificate Warnings</h6>
+      <button class="btn btn-sm btn-outline-warning" type="button" data-bs-toggle="collapse" data-bs-target="#certWarningsSection" aria-expanded="true">
+        <i class="bi bi-chevron-up"></i> Toggle
+      </button>
+    </div>
+    <div class="collapse show" id="certWarningsSection">
+      <div class="alert d-flex align-items-center mb-0" role="alert" style="background:#FFF3E0;border-color:#FF8C00;color:#E65100">
+        <i class="bi bi-exclamation-triangle-fill me-2 fs-5" style="color:#FF8C00"></i>
+        <div>
+          <strong>&#9888; {{ ns.expiring_certs }} propert{{ 'y has' if ns.expiring_certs == 1 else 'ies have' }} certificates expiring within 30 days!</strong>
+          Look for the <span class="badge text-white" style="background:#FF8C00">&#9888; Cert Expiring</span> badge below.
+        </div>
+      </div>
+      <div id="certExpiryWarnings" class="alert alert-warning py-2 d-none mt-2 mb-0"></div>
+    </div>
+  </div>
+  {% else %}
+  {# Hidden placeholder so charts.js can still populate cert warnings dynamically #}
+  <div id="certExpiryWarnings" class="alert alert-warning py-2 d-none mb-4"></div>
+  {% endif %}
+
+  {# ---- traffic overview charts (collapsible section) ---- #}
+  <div class="mb-4">
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <h6 class="fw-bold mb-0"><i class="bi bi-graph-up me-2"></i>Traffic Overview</h6>
+      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#trafficOverview" aria-expanded="true">
+        <i class="bi bi-chevron-up"></i> Toggle
+      </button>
+    </div>
+    <div class="collapse show" id="trafficOverview">
+      <div class="row g-3">
+        <div class="col-lg-4">
+          <div class="card shadow-sm h-100">
+            <div class="card-body chart-container">
+              <canvas id="chartTopEdge"></canvas>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card shadow-sm h-100">
+            <div class="card-body chart-container">
+              <canvas id="chartOffloadDist"></canvas>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card shadow-sm h-100">
+            <div class="card-body chart-container">
+              <canvas id="chartTrafficBreak"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ---- sticky search ---- #}
+  <div style="position:sticky;top:0;z-index:100;background:var(--bs-body-bg,#fff);padding:10px 0 8px;">
+    <div class="input-group">
+      <span class="input-group-text"><i class="bi bi-search"></i></span>
+      <input
+        type="text"
+        id="propSearch"
+        class="form-control"
+        placeholder="Search properties by name, ID, hostname, or CP code…"
+        oninput="filterProps(this.value)"
+      >
+      <button class="btn btn-outline-secondary" type="button" id="propSearchClear" onclick="clearSearch()" style="display:none">
+        <i class="bi bi-x-lg"></i>
+      </button>
+    </div>
+  </div>
+  <div id="noResultsMsg" class="text-muted small d-none mb-2">No matching properties found.</div>
+
+  {# ---- group accordion ---- #}
+  <div class="accordion" id="groupAccordion">
+  {% for group in report %}
+  {% set g_idx = loop.index %}
+    <div class="accordion-item border mb-2 rounded" data-group-index="{{ g_idx }}">
+      <h2 class="accordion-header">
+        <button
+          class="accordion-button {% if not loop.first %}collapsed{% endif %} fw-semibold"
+          type="button"
+          data-bs-toggle="collapse"
+          data-bs-target="#group-{{ g_idx }}"
+        >
+          <i class="bi bi-folder2 me-2 text-warning"></i>
+          {{ group.groupname }}
+          <span class="badge bg-secondary ms-2">{{ group.properties | length }} props</span>
+          <span class="badge bg-light text-dark ms-1 font-monospace small">{{ group.contractid }}</span>
+        </button>
+      </h2>
+      <div
+        id="group-{{ g_idx }}"
+        class="accordion-collapse collapse {% if loop.first %}show{% endif %}"
+        data-bs-parent="#groupAccordion"
+      >
+        <div class="accordion-body p-0">
+
+          {% if not group.properties %}
+            <p class="text-muted p-3 mb-0">No properties in this group.</p>
+          {% endif %}
+
+          {% for prop in group.properties %}
+          <div class="border-top p-3" data-prop-searchable="{{ prop.name | lower }} {{ prop.id }} {{ prop.hostnames | map(attribute='cnameFrom') | join(' ') | lower }} {{ prop.cpcodes | map(attribute='cpcode') | sum(start=[]) | join(' ') }}">
+
+            {# ---- property header ---- #}
+            <div class="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-3">
+              <div class="d-flex align-items-center gap-2">
+                <span class="fw-semibold fs-6">{{ prop.name }}</span>
+                <span class="text-muted font-monospace small">{{ prop.id }}</span>
+                {# inline offload sparkline #}
+                {% set prop_ns = namespace(off_sum=0.0, off_n=0) %}
+                {% for cp in prop.cpcodes %}
+                  {% if cp.traffic and cp.traffic.bytesOffload %}
+                    {% set prop_ns.off_sum = prop_ns.off_sum + cp.traffic.bytesOffload %}
+                    {% set prop_ns.off_n = prop_ns.off_n + 1 %}
+                  {% endif %}
+                {% endfor %}
+                {% if prop_ns.off_n > 0 %}
+                  <canvas class="sparkline-offload" data-sparkline-offload="{{ '%.1f' | format(prop_ns.off_sum / prop_ns.off_n) }}" width="70" height="16"></canvas>
+                {% endif %}
+              </div>
+              <div class="d-flex flex-wrap gap-1">
+                <span class="badge bg-primary">Prod v{{ prop.productionVersion or '—' }}</span>
+                <span class="badge bg-secondary">Stage v{{ prop.stagingVersion or '—' }}</span>
+                {% if prop.adv_override_exists %}
+                  <span class="badge bg-warning text-dark">Adv Override</span>
+                {% endif %}
+                {% if prop.custom_override_exists %}
+                  <span class="badge bg-warning text-dark">Custom Override</span>
+                {% endif %}
+                {% if prop.count_custom_behavior %}
+                  <span class="badge bg-info text-dark">{{ prop.count_custom_behavior }} Custom Behaviors</span>
+                {% endif %}
+                {% if prop.sro %}
+                  <span class="badge bg-danger">SRO</span>
+                {% endif %}
+                {% if prop.site_shield %}
+                  <span class="badge bg-dark">Site Shield: {{ prop.site_shield }}</span>
+                {% endif %}
+                {% if prop.CW_QR and prop.CW_QR[0] != 'False' %}
+                  <span class="badge bg-teal text-white" style="background:#0d9488">CW/QR</span>
+                {% endif %}
+                {% if prop.cert_expiry_days is defined and prop.cert_expiry_days is not none and prop.cert_expiry_days <= 30 %}
+                  <span class="badge text-white" style="background:#FF8C00">&#9888; Cert Expiring ({{ prop.cert_expiry_days }}d)</span>
+                {% endif %}
+              </div>
+            </div>
+
+            {# ---- property metadata row ---- #}
+            <div class="d-flex flex-wrap gap-3 mb-2 small text-muted">
+              {% if prop.last_activated %}
+              <span><i class="bi bi-clock-history me-1"></i><strong>Activated:</strong> {{ prop.last_activated[:10] }}</span>
+              {% endif %}
+              {% if prop.activated_by %}
+              <span><i class="bi bi-person me-1"></i><strong>By:</strong> {{ prop.activated_by }}</span>
+              {% endif %}
+              {% if prop.cert_expiry %}
+              <span><i class="bi bi-shield-lock me-1"></i><strong>Cert:</strong> {{ prop.cert_expiry }}
+                {% if prop.cert_type %} — {{ prop.cert_type }}{% elif prop.cert_issuer %} ({{ prop.cert_issuer }}){% endif %}
+              </span>
+              {% endif %}
+              {% if prop.min_tls %}
+              <span><i class="bi bi-lock me-1"></i><strong>Min TLS:</strong> {{ prop.min_tls }}</span>
+              {% endif %}
+            </div>
+
+            {# ---- origins ---- #}
+            {% if prop.origin %}
+            <p class="mb-2 small">
+              <i class="bi bi-hdd-network me-1 text-muted"></i>
+              <strong>Origins:</strong>
+              {% if prop.origin is iterable and prop.origin is not string %}
+                {{ prop.origin | join(', ') }}
+              {% else %}
+                {{ prop.origin }}
+              {% endif %}
+            </p>
+            {% endif %}
+
+            {# ---- tabs: CP Codes | Hostnames ---- #}
+            {% set tab_id = "prop-" ~ g_idx ~ "-" ~ loop.index %}
+            <div class="d-flex align-items-center justify-content-between mb-2">
+              <ul class="nav nav-tabs nav-sm mb-0" id="{{ tab_id }}-tabs" role="tablist">
+                <li class="nav-item">
+                  <button class="nav-link active small" data-bs-toggle="tab" data-bs-target="#{{ tab_id }}-cp" onclick="showColPicker('{{ tab_id }}','cp')">
+                    CP Codes ({{ prop.cpcodes | length }})
+                  </button>
+                </li>
+                <li class="nav-item">
+                  <button class="nav-link small" data-bs-toggle="tab" data-bs-target="#{{ tab_id }}-hn" onclick="showColPicker('{{ tab_id }}','hn')">
+                    Hostnames ({{ prop.hostnames | length }})
+                  </button>
+                </li>
+              </ul>
+              <div class="dropdown">
+                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" title="Select columns">
+                  <i class="bi bi-layout-three-columns me-1"></i>Columns
+                </button>
+                <div class="dropdown-menu dropdown-menu-end p-2 col-picker" id="{{ tab_id }}-col-picker" style="min-width:180px">
+                  {# CP Code columns (shown by default) #}
+                  <div class="col-picker-cp">
+                    <div class="dropdown-header small fw-bold px-1 d-flex justify-content-between align-items-center">
+                      CP Code Columns
+                      <a href="#" class="text-primary small text-decoration-none" onclick="selectAllCols('{{ tab_id }}','cp',true);return false">Select All</a>
+                    </div>
+                    {% set cp_cols = ['CP Code','Description','Product','Offload %','Cache Hit %','Edge GB','Midgress GB','Origin GB'] %}
+                    {% for col in cp_cols %}
+                    <div class="dropdown-item small py-1 d-flex align-items-center justify-content-between pe-2">
+                      <label class="mb-0 d-flex align-items-center flex-grow-1"><input type="checkbox" checked onchange="toggleCol('{{ tab_id }}','cp',{{ loop.index0 }},this.checked)" class="form-check-input me-2">{{ col }}</label>
+                      <a href="#" class="text-muted only-link" onclick="onlyCol('{{ tab_id }}','cp',{{ loop.index0 }});return false" title="Show only this column">only</a>
+                    </div>
+                    {% endfor %}
+                  </div>
+                  {# Hostname columns (hidden by default) #}
+                  <div class="col-picker-hn d-none">
+                    <div class="dropdown-header small fw-bold px-1 d-flex justify-content-between align-items-center">
+                      Hostname Columns
+                      <a href="#" class="text-primary small text-decoration-none" onclick="selectAllCols('{{ tab_id }}','hn',true);return false">Select All</a>
+                    </div>
+                    {% set hn_cols = ['Hostname','CNAME To','Map','Type','Slot','Cert Expires','Issuer'] %}
+                    {% for col in hn_cols %}
+                    <div class="dropdown-item small py-1 d-flex align-items-center justify-content-between pe-2">
+                      <label class="mb-0 d-flex align-items-center flex-grow-1"><input type="checkbox" checked onchange="toggleCol('{{ tab_id }}','hn',{{ loop.index0 }},this.checked)" class="form-check-input me-2">{{ col }}</label>
+                      <a href="#" class="text-muted only-link" onclick="onlyCol('{{ tab_id }}','hn',{{ loop.index0 }});return false" title="Show only this column">only</a>
+                    </div>
+                    {% endfor %}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="tab-content">
+
+              {# CP Codes tab #}
+              <div class="tab-pane fade show active" id="{{ tab_id }}-cp">
+                {% if prop.cpcodes %}
+                <div class="table-responsive">
+                  <table class="table table-sm table-hover mb-0 small">
+                    <thead class="table-dark">
+                      <tr>
+                        <th>CP Code</th>
+                        <th>Description</th>
+                        <th>Product</th>
+                        <th class="text-end">Offload %</th>
+                        <th class="text-end">Cache Hit %</th>
+                        <th class="text-end">Edge GB</th>
+                        <th class="text-end">Midgress GB</th>
+                        <th class="text-end">Origin GB</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                    {% for entry in prop.cpcodes %}
+                      {% set cplist  = entry.cpcode if entry.cpcode is iterable and entry.cpcode is not string else [entry.cpcode] %}
+                      {% set desclist = entry.description if entry.description is iterable and entry.description is not string else [entry.description] %}
+                      {% set prodlist = entry.product if entry.product is iterable and entry.product is not string else [entry.product] %}
+                      {% set traffic  = entry.traffic or {} %}
+                      {% for i in range([cplist|length, 1]|max) %}
+                      <tr>
+                        <td class="font-monospace">{{ cplist[i] if i < cplist|length else '' }}</td>
+                        <td>{{ desclist[i] if i < desclist|length else '' }}</td>
+                        <td>{{ prodlist[i] if i < prodlist|length else '' }}</td>
+                        <td class="text-end">
+                          {% if traffic.bytesOffload is defined and traffic.bytesOffload %}
+                            <span class="badge {% if traffic.bytesOffload >= 90 %}bg-success{% elif traffic.bytesOffload >= 70 %}bg-warning text-dark{% else %}bg-danger{% endif %}">
+                              {{ traffic.bytesOffload }}%
+                            </span>
+                          {% endif %}
+                        </td>
+                        <td class="text-end">
+                          {% if traffic.cacheHitPct is defined and traffic.cacheHitPct %}
+                            <span class="badge {% if traffic.cacheHitPct >= 90 %}bg-success{% elif traffic.cacheHitPct >= 70 %}bg-warning text-dark{% else %}bg-danger{% endif %}">
+                              {{ traffic.cacheHitPct }}%
+                            </span>
+                          {% endif %}
+                        </td>
+                        <td class="text-end">{{ traffic.edgeBytes or '—' }}</td>
+                        <td class="text-end">{{ traffic.midgressBytes or '—' }}</td>
+                        <td class="text-end">{{ traffic.originBytes or '—' }}</td>
+                      </tr>
+                      {% endfor %}
+                    {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+                {% else %}
+                  <p class="text-muted small mb-0 p-2">No CP codes found.</p>
+                {% endif %}
+              </div>
+
+              {# Hostnames tab #}
+              <div class="tab-pane fade" id="{{ tab_id }}-hn">
+                {% if prop.hostnames %}
+                <div class="table-responsive">
+                  <table class="table table-sm table-hover mb-0 small">
+                    <thead class="table-dark">
+                      <tr>
+                        <th>Hostname</th>
+                        <th>CNAME To</th>
+                        <th>Map</th>
+                        <th>Type</th>
+                        <th>Slot</th>
+                        <th>Cert Expires</th>
+                        <th>Issuer</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                    {% for h in prop.hostnames %}
+                      <tr>
+                        <td class="font-monospace small">{{ h.cnameFrom or h.name or '' }}</td>
+                        <td class="font-monospace small text-muted">{{ h.cnameTo or '' }}</td>
+                        <td>{{ h.map or '' }}</td>
+                        <td>
+                          {% if h.type == 'ESSL' %}
+                            <span class="badge bg-success">ESSL</span>
+                          {% elif h.type %}
+                            <span class="badge bg-secondary">{{ h.type }}</span>
+                          {% endif %}
+                        </td>
+                        <td>{{ h.slot or '' }}</td>
+                        <td class="small">
+                          {% if h.cert and h.cert.expiration %}
+                            {{ h.cert.expiration }}
+                          {% else %}
+                            <span class="text-muted">—</span>
+                          {% endif %}
+                        </td>
+                        <td class="small">{{ h.cert.issuer if h.cert and h.cert.issuer else '—' }}</td>
+                      </tr>
+                    {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+                {% else %}
+                  <p class="text-muted small mb-0 p-2">No hostnames found.</p>
+                {% endif %}
+              </div>
+
+            </div>{# tab-content #}
+          </div>{# property #}
+          {% endfor %}
+
+        </div>{# accordion-body #}
+      </div>{# collapse #}
+    </div>{# accordion-item #}
+  {% endfor %}
+  </div>{# accordion #}
+
+</div>{# report-content #}
+
+<script>
+function filterProps(query) {
+  const q = query.trim().toLowerCase();
+  document.getElementById('propSearchClear').style.display = q ? '' : 'none';
+  let totalVisible = 0;
+  document.querySelectorAll('[data-group-index]').forEach(groupEl => {
+    const props = groupEl.querySelectorAll('[data-prop-searchable]');
+    let groupVisible = 0;
+    props.forEach(propEl => {
+      const match = !q || propEl.dataset.propSearchable.includes(q);
+      propEl.style.display = match ? '' : 'none';
+      if (match) groupVisible++;
+    });
+    totalVisible += groupVisible;
+    groupEl.style.display = (!q || groupVisible > 0) ? '' : 'none';
+    if (q && groupVisible > 0) {
+      groupEl.querySelector('.accordion-collapse')?.classList.add('show');
+    }
+  });
+  document.getElementById('noResultsMsg').classList.toggle('d-none', totalVisible > 0 || !q);
+}
+function clearSearch() {
+  const input = document.getElementById('propSearch');
+  input.value = '';
+  filterProps('');
+  input.focus();
+}
+
+// ---- Column picker ----
+function showColPicker(tabId, type) {
+  const picker = document.getElementById(tabId + '-col-picker');
+  if (!picker) return;
+  picker.querySelector('.col-picker-cp').classList.toggle('d-none', type !== 'cp');
+  picker.querySelector('.col-picker-hn').classList.toggle('d-none', type !== 'hn');
+}
+
+function toggleCol(tabId, type, colIdx, show) {
+  const pane = document.getElementById(tabId + '-' + type);
+  if (!pane) return;
+  const table = pane.querySelector('table');
+  if (!table) return;
+  // Toggle header
+  const ths = table.querySelectorAll('thead tr th');
+  if (ths[colIdx]) ths[colIdx].style.display = show ? '' : 'none';
+  // Toggle body cells
+  table.querySelectorAll('tbody tr').forEach(function(row) {
+    const tds = row.querySelectorAll('td');
+    if (tds[colIdx]) tds[colIdx].style.display = show ? '' : 'none';
+  });
+}
+
+function selectAllCols(tabId, type, show) {
+  var picker = document.getElementById(tabId + '-col-picker');
+  if (!picker) return;
+  var section = picker.querySelector('.col-picker-' + type);
+  if (!section) return;
+  var checkboxes = section.querySelectorAll('input[type="checkbox"]');
+  checkboxes.forEach(function(cb, idx) {
+    cb.checked = show;
+    toggleCol(tabId, type, idx, show);
+  });
+}
+
+function onlyCol(tabId, type, colIdx) {
+  var picker = document.getElementById(tabId + '-col-picker');
+  if (!picker) return;
+  var section = picker.querySelector('.col-picker-' + type);
+  if (!section) return;
+  var checkboxes = section.querySelectorAll('input[type="checkbox"]');
+  checkboxes.forEach(function(cb, idx) {
+    cb.checked = (idx === colIdx);
+    toggleCol(tabId, type, idx, idx === colIdx);
+  });
+}
+
+// Initialize column picker to show correct section when tab switches
+document.addEventListener('shown.bs.tab', function(e) {
+  const btn = e.target;
+  const target = btn.getAttribute('data-bs-target') || '';
+  const match = target.match(/^#(prop-\d+-\d+)-(cp|hn)$/);
+  if (match) showColPicker(match[1], match[2]);
+});
+</script>
+
+{# ---- chart data + script ---- #}
+<script id="report-chart-data" type="application/json">
+{{ chart_json | safe }}
+</script>
+<script src="/static/js/charts.js"></script>

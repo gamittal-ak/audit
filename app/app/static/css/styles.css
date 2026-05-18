@@ -1,0 +1,66 @@
+/* Akamai Audit Tool — custom styles */
+
+body {
+  background-color: #f8f9fa;
+}
+
+.navbar {
+  border-bottom: 2px solid #1F4E78;
+}
+
+.accordion-button:not(.collapsed) {
+  background-color: #e8f0fe;
+  color: #1a3a5c;
+}
+
+.accordion-button:focus {
+  box-shadow: none;
+}
+
+.accordion-item {
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+}
+
+.nav-tabs .nav-link {
+  font-size: 0.85rem;
+  padding: 0.3rem 0.75rem;
+}
+
+.table th {
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.table td {
+  vertical-align: middle;
+}
+
+.badge {
+  font-weight: 500;
+}
+
+/* HTMX loading indicator */
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+}
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
+/* Progress bar */
+.progress {
+  border-radius: 8px;
+}
+
+/* Summary cards */
+.display-6 {
+  font-size: 2rem;
+}
+
+/* Monospace font for IDs */
+.font-monospace {
+  font-size: 0.82em;
+}
