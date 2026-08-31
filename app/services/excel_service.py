@@ -28,14 +28,17 @@ _border = Border(
 
 _HEADERS = [
     "Group Name", "Group ID", "Parent Group ID", "Contract ID",
-    "Property ID", "Property Name", "Origin", "Latest Version",
+    "Property ID", "Property Name", "Origin", "Client Characteristics",
+    "Content Characteristics", "Origin Characteristics", "Latest Version",
     "Staging Version", "Production Version", "CP Code", "Description",
     "Product", "Offload %", "Edge GB", "Midgress GB", "Origin GB",
-    "Cache Hit %", "CNAME From", "CNAME To", "Cert Expiry",
-    "Cert Type", "Cert Issuer", "Min TLS Version", "Origin Characteristics", "SRO",
-    "Site Shield", "Advanced Override", "Custom Override",
-    "Custom Behavior Count", "CW/QR", "Total Rules", "Max Depth",
-    "Behavior Count", "Last Activated", "Activated By",
+    "Cache Hit %", "CNAME From", "CNAME To", "Edge Map",
+    "Network Type", "Slot", "Hostname Cert CN", "Hostname Cert Expiry",
+    "Hostname Cert Issuer", "Hostname Cert Serial", "Hostname Cert Version",
+    "Property Cert Expiry", "Property Cert Expiry Days", "Property Cert Type",
+    "Property Cert Issuer", "Min TLS Version", "SRO", "Site Shield",
+    "Advanced Override", "Custom Override", "Custom Behavior Count", "CW/QR",
+    "Total Rules", "Max Depth", "Behavior Count", "Last Activated", "Activated By",
 ]
 
 
@@ -73,12 +76,12 @@ def generate_excel(json_path: str, xlsx_path: str) -> str:
             cert_tls = _cert_tls_cols(prop)
 
             if not cpcodes and not hostnames:
-                ws.append(base + [""] * 8 + ["", ""] + cert_tls + flags)
+                ws.append(base + [""] * 8 + [""] * 10 + cert_tls + flags)
                 continue
 
             if not hostnames:
                 for entry in _expand_cpcodes(cpcodes):
-                    ws.append(base + entry + ["", ""] + cert_tls + flags)
+                    ws.append(base + entry + [""] * 10 + cert_tls + flags)
                 continue
 
             if not cpcodes:
@@ -114,10 +117,21 @@ def _prop_base(group_name, group_id, parent_group_id, contract_id, prop) -> list
         prop.get("id", ""),
         prop.get("name", ""),
         origin_str,
+        _cell_value(prop.get("clientCharacteristics")),
+        _cell_value(prop.get("contentCharacteristics")),
+        _cell_value(prop.get("originCharacteristics")),
         prop.get("latestVersion", ""),
         prop.get("stagingVersion", ""),
         prop.get("productionVersion", ""),
     ]
+
+
+def _cell_value(value) -> str:
+    if value in (None, "", [], {}):
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True)
+    return str(value)
 
 
 def _prop_flags(prop) -> list:
@@ -125,7 +139,6 @@ def _prop_flags(prop) -> list:
     cw_qr = prop.get("CW_QR") or []
     cw_qr_str = ", ".join(str(x) for x in cw_qr) if isinstance(cw_qr, list) else str(cw_qr)
     return [
-        "Yes" if prop.get("originCharacteristics") else "No",
         prop.get("sro", ""),
         prop.get("site_shield", ""),
         prop.get("adv_override_exists", ""),
@@ -189,14 +202,27 @@ def _expand_cpcodes(cpcodes: list) -> list:
 
 def _hostname_cols(h) -> list:
     if isinstance(h, dict):
-        return [h.get("cnameFrom", ""), h.get("cnameTo", "")]
-    return [str(h), ""]
+        cert = h.get("cert") or {}
+        return [
+            h.get("cnameFrom", ""),
+            h.get("cnameTo", ""),
+            h.get("map", ""),
+            h.get("type", ""),
+            h.get("slot", ""),
+            cert.get("commonName", "") if isinstance(cert, dict) else "",
+            cert.get("expiration", "") if isinstance(cert, dict) else "",
+            cert.get("issuer", "") if isinstance(cert, dict) else "",
+            cert.get("serialNumber", "") if isinstance(cert, dict) else "",
+            cert.get("version", "") if isinstance(cert, dict) else "",
+        ]
+    return [str(h), "", "", "", "", "", "", "", "", ""]
 
 
 def _cert_tls_cols(prop) -> list:
     """Columns for Cert Expiry, Cert Type, Cert Issuer, Min TLS Version."""
     return [
         prop.get("cert_expiry", ""),
+        prop.get("cert_expiry_days", ""),
         prop.get("cert_type", ""),
         prop.get("cert_issuer", ""),
         prop.get("min_tls", ""),
@@ -220,7 +246,8 @@ def _format_worksheet(ws):
 
     # Determine column indices dynamically
     edge_gb_idx = _HEADERS.index("Edge GB")
-    cert_expiry_idx = _HEADERS.index("Cert Expiry")
+    cert_expiry_idx = _HEADERS.index("Property Cert Expiry")
+    hostname_cert_expiry_idx = _HEADERS.index("Hostname Cert Expiry")
 
     # Row formatting
     for row_idx, row in enumerate(ws.iter_rows(min_row=2), 2):
@@ -239,10 +266,11 @@ def _format_worksheet(ws):
             cell.alignment = Alignment(vertical="center")
 
         # Cert expiry warning — orange highlight for certs expiring within 30 days
-        cert_cell = row[cert_expiry_idx]
-        if cert_cell.value and _is_cert_expiring_soon(str(cert_cell.value), 30):
-            cert_cell.fill = _cert_warn_fill
-            cert_cell.font = _cert_warn_font
+        for idx in (cert_expiry_idx, hostname_cert_expiry_idx):
+            cert_cell = row[idx]
+            if cert_cell.value and _is_cert_expiring_soon(str(cert_cell.value), 30):
+                cert_cell.fill = _cert_warn_fill
+                cert_cell.font = _cert_warn_font
 
     # Excel table
     tab = Table(displayName="ReportData", ref=ws.dimensions)
@@ -344,6 +372,13 @@ def _build_summary_sheet(wb, data):
         ("Properties with Adv Override", adv_override_count),
         ("Properties with Site Shield", site_shield_count),
         ("", ""),
+        ("-- Color Legend --", ""),
+        ("Blue header", "Column headers"),
+        ("Yellow row", "Standard property data row"),
+        ("Red row", "Property row where Edge GB is blank or 0"),
+        ("Green row", "Group row with no properties"),
+        ("Orange cert cell", "Certificate expires within 30 days"),
+        ("", ""),
         ("-- Products Breakdown --", ""),
     ]
     for prod_name, count in sorted(products.items(), key=lambda x: -x[1]):
@@ -365,10 +400,24 @@ def _build_summary_sheet(wb, data):
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = _border
 
+    legend_fills = {
+        "Blue header": (_header_fill, _header_font),
+        "Yellow row": (_prop_fill, None),
+        "Red row": (_warn_fill, None),
+        "Green row": (_group_fill, None),
+        "Orange cert cell": (_cert_warn_fill, _cert_warn_font),
+    }
+
     for row in ws.iter_rows(min_row=2):
+        first_value = row[0].value
+        fill_font = legend_fills.get(first_value)
         for cell in row:
             cell.border = _border
             cell.alignment = Alignment(vertical="center")
+            if fill_font:
+                cell.fill = fill_font[0]
+                if fill_font[1]:
+                    cell.font = fill_font[1]
             # Orange highlight for cert expiry section
             if cell.value and isinstance(cell.value, str) and "Certs Expiring" in cell.value:
                 cell.fill = _cert_warn_fill

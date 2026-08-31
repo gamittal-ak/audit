@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 import ssl
+import re
 import socket
 import sys
 from datetime import datetime, timedelta, timezone
@@ -156,7 +157,15 @@ class AkamaiClient:
 
     # ------------------------------------------------------------------ Reporting
 
-    async def get_traffic(self, switch_key: str, cpcodes: List[str], days: int = 15, _max_retries: int = 5) -> dict:
+    async def get_traffic(
+        self,
+        switch_key: str,
+        cpcodes: List[str],
+        days: int = 15,
+        _max_retries: int = 5,
+        chunk_size: int = 100,
+        chunk_delay_seconds: float = 0.25,
+    ) -> dict:
         """Fetch traffic data for a list of cpcodes. Returns dict with 'data', 'status'."""
         if switch_key in _reporting_forbidden:
             return {"data": [], "status": "forbidden"}
@@ -180,117 +189,259 @@ class AkamaiClient:
                     flat.append(int(c))
                 except (ValueError, TypeError):
                     pass
-        cpcodes = list(set(flat))
+        cpcodes = sorted(set(flat))
         if not cpcodes:
             return {"data": [], "status": "no_cpcodes"}
 
-        body = {
-            "dimensions": ["cpcode"],
-            "metrics": [
-                "offloadedBytesPercentage",
-                "edgeBytesSum",
-                "midgressBytesSum",
-                "originBytesSum",
-                "offloadedHitsPercentage",
-            ],
-            "filters": [
-                {
-                    "dimensionName": "cpcode",
-                    "operator": "IN_LIST",
-                    "expressions": cpcodes,
-                }
-            ],
-        }
+        try:
+            chunk_size = int(chunk_size)
+        except (TypeError, ValueError):
+            chunk_size = len(cpcodes)
+        if chunk_size <= 0:
+            chunk_size = len(cpcodes)
 
-        import re as _re
+        chunks = [cpcodes[i:i + chunk_size] for i in range(0, len(cpcodes), chunk_size)]
+        if len(chunks) > 1:
+            logger.info(
+                "Reporting API traffic fetch split into %d chunks (%d cpcodes, chunk_size=%d)",
+                len(chunks), len(cpcodes), chunk_size,
+            )
 
-        for attempt in range(1, _max_retries + 1):
+        data_rows: List[dict] = []
+        cpcode_statuses: Dict[str, str] = {}
+        failed_statuses: List[str] = []
+
+        for idx, chunk in enumerate(chunks, start=1):
+            if idx > 1 and chunk_delay_seconds > 0:
+                await asyncio.sleep(chunk_delay_seconds)
+
+            chunk_resp = await self._get_traffic_chunk(
+                switch_key, chunk, start, end, _max_retries
+            )
+            status = chunk_resp.get("status", "api_error")
+            rows = chunk_resp.get("data", [])
+            data_rows.extend(rows)
+
+            for cpc in chunk_resp.get("unauthorized_cpcodes", []):
+                cpcode_statuses[str(cpc)] = "forbidden"
+
+            if status not in ("ok", "no_cpcodes"):
+                failed_statuses.append(status)
+                for cpc in chunk_resp.get("failed_cpcodes", chunk):
+                    cpcode_statuses.setdefault(str(cpc), status)
+
+            if len(chunks) > 1:
+                logger.info(
+                    "Reporting API traffic chunk %d/%d: status=%s, %d rows for %d cpcodes",
+                    idx, len(chunks), status, len(rows), len(chunk),
+                )
+
+        if failed_statuses:
+            if data_rows or len(cpcode_statuses) < len(cpcodes):
+                overall_status = "partial"
+            elif all(s == failed_statuses[0] for s in failed_statuses):
+                overall_status = failed_statuses[0]
+            else:
+                overall_status = "api_error"
+        else:
+            overall_status = "ok"
+
+        logger.info(
+            "Reporting API traffic complete: status=%s, %d rows for %d cpcodes (%d cpcodes marked)",
+            overall_status, len(data_rows), len(cpcodes), len(cpcode_statuses),
+        )
+        result = {"data": data_rows, "status": overall_status}
+        if cpcode_statuses:
+            result["cpcode_statuses"] = cpcode_statuses
+        return result
+
+    async def _get_traffic_chunk(
+        self,
+        switch_key: str,
+        cpcodes: List[int],
+        start: str,
+        end: str,
+        max_retries: int,
+    ) -> dict:
+        pending = list(cpcodes)
+        unauthorized: set = set()
+
+        attempt = 1
+        while attempt <= max_retries:
             resp = await self._post(
                 "/reporting-api/v2/reports/delivery/traffic/current/data",
                 params={"accountSwitchKey": switch_key, "start": start, "end": end},
-                json_body=body,
+                json_body=_traffic_body(pending),
             )
 
             if resp.status_code == 403:
-                # Check if specific cpcodes are unauthorized (not the whole account)
                 resp_text = resp.text[:2000]
-                if "unauthorized-objects" in resp_text or "unauthorized objects" in resp_text.lower():
-                    # Extract unauthorized cpcode IDs from error detail
-                    bad_ids: set = set()
-                    for m in _re.findall(r'\b(\d{4,})\b', resp_text.split("unauthorized")[-1]):
-                        try:
-                            bad_ids.add(int(m))
-                        except ValueError:
-                            pass
+                bad_ids = _extract_unauthorized_cpcodes(resp)
+                if bad_ids is not None:
+                    bad_ids = {c for c in bad_ids if c in pending}
                     if bad_ids:
-                        remaining = [c for c in cpcodes if c not in bad_ids]
+                        unauthorized.update(bad_ids)
+                        pending = [c for c in pending if c not in bad_ids]
                         logger.warning(
                             "Reporting API 403: %d unauthorized cpcodes removed (%s) for switch_key=%s — retrying with %d remaining",
-                            len(bad_ids), bad_ids, switch_key, len(remaining),
+                            len(bad_ids), sorted(bad_ids), switch_key, len(pending),
                         )
-                        if remaining:
-                            cpcodes = remaining
-                            body["filters"][0]["expressions"] = cpcodes
-                            continue  # retry without the bad cpcodes
-                # Entire account is forbidden
+                        if not pending:
+                            return {
+                                "data": [],
+                                "status": "ok",
+                                "unauthorized_cpcodes": sorted(unauthorized),
+                            }
+                        continue
+
+                    logger.warning(
+                        "Reporting API 403 unauthorized-objects response for switch_key=%s, but no matching cpcodes could be extracted. Response: %s",
+                        switch_key, resp_text,
+                    )
+                    return {
+                        "data": [],
+                        "status": "forbidden",
+                        "failed_cpcodes": cpcodes,
+                        "unauthorized_cpcodes": sorted(unauthorized),
+                    }
+
                 _reporting_forbidden.add(switch_key)
                 logger.warning(
                     "Reporting API 403 for switch_key=%s — traffic will be skipped for this account. Response: %s",
                     switch_key,
                     resp_text,
                 )
-                return {"data": [], "status": "forbidden"}
+                return {
+                    "data": [],
+                    "status": "forbidden",
+                    "failed_cpcodes": cpcodes,
+                    "unauthorized_cpcodes": sorted(unauthorized),
+                }
 
             if resp.status_code == 429:
-                if attempt < _max_retries:
-                    wait = (2 ** attempt) + (attempt * 0.5)  # 2.5s, 4.5s, 8.5s, 16.5s
+                if attempt < max_retries:
+                    wait = _retry_delay(resp, attempt)
                     logger.warning(
                         "Reporting API 429 rate limit for switch_key=%s (attempt %d/%d) — retrying in %.1fs",
-                        switch_key, attempt, _max_retries, wait,
+                        switch_key, attempt, max_retries, wait,
                     )
                     await asyncio.sleep(wait)
+                    attempt += 1
                     continue
                 logger.warning(
                     "Reporting API 429 rate limit for switch_key=%s — exhausted %d retries, skipping.",
-                    switch_key, _max_retries,
+                    switch_key, max_retries,
                 )
-                return {"data": [], "status": "rate_limited"}
+                return {"data": [], "status": "rate_limited", "failed_cpcodes": cpcodes}
 
             if resp.status_code in (500, 502, 503, 504):
-                if attempt < _max_retries:
-                    wait = 2 ** attempt
+                if attempt < max_retries:
+                    wait = _retry_delay(resp, attempt)
                     logger.warning(
-                        "Reporting API %s for switch_key=%s (attempt %d/%d) — retrying in %ds",
-                        resp.status_code, switch_key, attempt, _max_retries, wait,
+                        "Reporting API %s for switch_key=%s (attempt %d/%d) — retrying in %.1fs",
+                        resp.status_code, switch_key, attempt, max_retries, wait,
                     )
                     await asyncio.sleep(wait)
+                    attempt += 1
                     continue
                 logger.warning(
                     "Reporting API %s for switch_key=%s — exhausted %d retries. Response: %s",
-                    resp.status_code, switch_key, _max_retries, resp.text[:500],
+                    resp.status_code, switch_key, max_retries, resp.text[:500],
                 )
-                return {"data": [], "status": "api_error"}
+                return {"data": [], "status": "api_error", "failed_cpcodes": cpcodes}
 
             if resp.status_code != 200:
                 logger.warning(
                     "Reporting API returned %s for %s: %s",
                     resp.status_code, switch_key, resp.text[:500],
                 )
-                return {"data": [], "status": "api_error"}
+                return {"data": [], "status": "api_error", "failed_cpcodes": cpcodes}
 
-            # Success
             data = resp.json()
             logger.info(
                 "Reporting API returned %d rows for %d cpcodes (switch_key=%s)",
-                len(data.get("data", [])), len(cpcodes), switch_key,
+                len(data.get("data", [])), len(pending), switch_key,
             )
-            data["status"] = "ok"
-            return data
+            return {
+                "data": data.get("data", []),
+                "status": "ok",
+                "unauthorized_cpcodes": sorted(unauthorized),
+            }
 
-        return {"data": [], "status": "api_error"}
+        return {"data": [], "status": "api_error", "failed_cpcodes": cpcodes}
+
 
 
 # ------------------------------------------------------------------ utilities
+
+def _traffic_body(cpcodes: List[int]) -> dict:
+    return {
+        "dimensions": ["cpcode"],
+        "metrics": [
+            "offloadedBytesPercentage",
+            "edgeBytesSum",
+            "midgressBytesSum",
+            "originBytesSum",
+            "offloadedHitsPercentage",
+        ],
+        "filters": [
+            {
+                "dimensionName": "cpcode",
+                "operator": "IN_LIST",
+                "expressions": cpcodes,
+            }
+        ],
+    }
+
+
+def _extract_unauthorized_cpcodes(resp: httpx.Response) -> Optional[set]:
+    """Return unauthorized CPCode IDs, or None if this is not that 403 shape."""
+    resp_text = resp.text[:4000]
+    payload = {}
+    try:
+        payload = resp.json()
+    except ValueError:
+        pass
+
+    title = str(payload.get("title", ""))
+    problem_type = str(payload.get("type", ""))
+    detail = str(payload.get("detail", ""))
+    signal = f"{title} {problem_type} {detail} {resp_text}".lower()
+    if "unauthorized" not in signal or "object" not in signal:
+        return None
+
+    source = detail or resp_text
+    match = re.search(r"\[([^\]]+)\]", source)
+    if match:
+        source = match.group(1)
+    elif ":" in source:
+        source = source.split(":", 1)[1]
+
+    ids = set()
+    for token in re.findall(r"\b\d+\b", source):
+        try:
+            ids.add(int(token))
+        except ValueError:
+            pass
+    return ids
+
+
+def _retry_delay(resp: httpx.Response, attempt: int) -> float:
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        try:
+            return max(float(retry_after), 0.0)
+        except ValueError:
+            try:
+                from email.utils import parsedate_to_datetime
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                return max((retry_at - datetime.now(timezone.utc)).total_seconds(), 0.0)
+            except (TypeError, ValueError):
+                pass
+    return (2 ** attempt) + (attempt * 0.5)
+
 
 def _utc_midnight(dt: datetime) -> str:
     dt = dt.astimezone(timezone.utc)

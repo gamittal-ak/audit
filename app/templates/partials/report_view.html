@@ -317,7 +317,7 @@
                       Hostname Columns
                       <a href="#" class="text-primary small text-decoration-none" onclick="selectAllCols('{{ tab_id }}','hn',true);return false">Select All</a>
                     </div>
-                    {% set hn_cols = ['Hostname','CNAME To','Map','Type','Slot','Cert Expires','Issuer'] %}
+                    {% set hn_cols = ['Hostname','CNAME To','Edge Map','Type','Slot','Cert Expires','Issuer'] %}
                     {% for col in hn_cols %}
                     <div class="dropdown-item small py-1 d-flex align-items-center justify-content-between pe-2">
                       <label class="mb-0 d-flex align-items-center flex-grow-1"><input type="checkbox" checked onchange="toggleCol('{{ tab_id }}','hn',{{ loop.index0 }},this.checked)" class="form-check-input me-2">{{ col }}</label>
@@ -396,7 +396,7 @@
                       <tr>
                         <th>Hostname</th>
                         <th>CNAME To</th>
-                        <th>Map</th>
+                        <th>Edge Map</th>
                         <th>Type</th>
                         <th>Slot</th>
                         <th>Cert Expires</th>

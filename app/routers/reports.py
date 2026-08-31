@@ -187,8 +187,7 @@ async def delete_task(task_id: str, request: Request, _=Depends(require_auth)):
         await r.aclose()
 
         # Try to clean up report files
-        if meta:
-            _delete_report_files(task_id, meta.get("account_name", ""))
+        _delete_report_files(task_id, meta)
 
         logger.info("Deleted task %s", task_id)
     except Exception:
@@ -210,8 +209,7 @@ async def delete_selected_tasks(request: Request, _=Depends(require_auth)):
             meta = await r.hgetall(f"task:{tid}")
             await r.zrem("recent_tasks", tid)
             await r.delete(f"task:{tid}")
-            if meta:
-                _delete_report_files(tid, meta.get("account_name", ""))
+            _delete_report_files(tid, meta)
         await r.aclose()
         logger.info("Deleted %d tasks: %s", len(task_ids), task_ids)
     except Exception:
@@ -228,8 +226,7 @@ async def delete_all_tasks(request: Request, _=Depends(require_auth)):
         for tid in task_ids:
             meta = await r.hgetall(f"task:{tid}")
             await r.delete(f"task:{tid}")
-            if meta:
-                _delete_report_files(tid, meta.get("account_name", ""))
+            _delete_report_files(tid, meta)
         await r.delete("recent_tasks")
         await r.aclose()
         logger.info("Deleted all %d tasks", len(task_ids))
@@ -238,21 +235,53 @@ async def delete_all_tasks(request: Request, _=Depends(require_auth)):
     return JSONResponse({"ok": True})
 
 
-def _delete_report_files(task_id: str, account_name: str):
-    """Best-effort cleanup of report JSON/XLSX files for a task."""
-    import shutil
-    from pathlib import Path
-    settings = get_settings()
+def _delete_report_files(task_id: str, meta: dict | None = None):
+    """Best-effort cleanup of report JSON/XLSX files for a task.
+
+    File paths come primarily from the task's Redis hash (`meta`) — the Celery
+    result expires after 24h and never exists for orphan-scanned reports, so it
+    is only a fallback.
+    """
+    paths = set()
+    for source in (meta or {},):
+        for key in ("json_path", "xlsx_path"):
+            p = source.get(key)
+            if p:
+                paths.add(p)
     try:
-        # Try to get file paths from Celery result
         result = celery_app.AsyncResult(task_id)
         if result and isinstance(result.info, dict):
             for key in ("json_path", "xlsx_path"):
                 p = result.info.get(key)
                 if p:
-                    Path(p).unlink(missing_ok=True)
+                    paths.add(p)
+        result.forget()
     except Exception:
         pass
+
+    for p in list(paths):
+        # Reports come in .json/.xlsx pairs; delete the sibling even if only
+        # one path was recorded, otherwise the orphan scanner re-registers it.
+        fp = Path(p)
+        for suffix in (".json", ".xlsx"):
+            paths.add(str(fp.with_suffix(suffix)))
+
+    parents = set()
+    for p in paths:
+        try:
+            fp = Path(p)
+            fp.unlink(missing_ok=True)
+            parents.add(fp.parent)
+        except Exception:
+            logger.exception("Could not delete report file %s", p)
+
+    reports_dir = Path(get_settings().reports_base_dir).resolve()
+    for parent in parents:
+        try:
+            if parent.resolve() != reports_dir and not any(parent.iterdir()):
+                parent.rmdir()
+        except Exception:
+            pass
 
 
 @router.get("/api/reports/{task_id}/status", response_class=HTMLResponse)

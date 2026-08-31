@@ -19,7 +19,7 @@ services:
     env_file: .env
     volumes:
       - ./reports:/app/reports
-      - ${HOME}/.edgerc:/run/secrets/edgerc:ro
+      - ${EDGERC_HOST_PATH:-./.edgerc}:/run/secrets/edgerc:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -35,7 +35,7 @@ services:
     env_file: .env
     volumes:
       - ./reports:/app/reports
-      - ${HOME}/.edgerc:/run/secrets/edgerc:ro
+      - ${EDGERC_HOST_PATH:-./.edgerc}:/run/secrets/edgerc:ro
     depends_on:
       redis:
         condition: service_healthy

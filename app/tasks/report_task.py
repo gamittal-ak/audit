@@ -120,9 +120,17 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
                                 pass
 
         traffic_data: Dict[int, dict] = {}
+        traffic_status_by_cpcode: Dict[int, str] = {}
         traffic_status = "no_cpcodes"
         if all_cpcodes:
-            resp = await reporting_client.get_traffic(switch_key, list(all_cpcodes), days=traffic_days)
+            resp = await reporting_client.get_traffic(
+                switch_key,
+                list(all_cpcodes),
+                days=traffic_days,
+                _max_retries=settings.traffic_max_retries,
+                chunk_size=settings.traffic_chunk_size,
+                chunk_delay_seconds=settings.traffic_chunk_delay_seconds,
+            )
             traffic_status = resp.get("status", "api_error")
             if resp.get("data"):
                 for row in resp["data"]:
@@ -132,7 +140,15 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
                             traffic_data[int(cpc_raw)] = row
                         except (ValueError, TypeError):
                             pass
-            logger.info("Batched traffic fetch: status=%s, %d rows for %d cpcodes", traffic_status, len(traffic_data), len(all_cpcodes))
+            for cpc_raw, status in (resp.get("cpcode_statuses") or {}).items():
+                try:
+                    traffic_status_by_cpcode[int(cpc_raw)] = str(status)
+                except (ValueError, TypeError):
+                    pass
+            logger.info(
+                "Batched traffic fetch: status=%s, %d rows for %d cpcodes, %d cpcodes marked",
+                traffic_status, len(traffic_data), len(all_cpcodes), len(traffic_status_by_cpcode),
+            )
 
         # ---- Step 4.5: inject traffic into property outputs ---------------
         import math as _math
@@ -157,7 +173,9 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
                         "originBytes": round(float(m.get("originBytesSum", 0)) / _math.pow(1000, 3), 2),
                         "cacheHitPct": round(float(m.get("offloadedHitsPercentage", 0)), 2),
                     }
-                elif traffic_status != "ok":
+                elif cp_key in traffic_status_by_cpcode:
+                    cp_entry["traffic"] = {"_status": traffic_status_by_cpcode[cp_key]}
+                elif traffic_status not in ("ok", "partial"):
                     # Traffic pull failed — mark it so Excel can differentiate from zero
                     cp_entry["traffic"] = {"_status": traffic_status}
 
