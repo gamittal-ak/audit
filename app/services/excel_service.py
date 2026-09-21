@@ -1,9 +1,9 @@
 """
 Converts a report JSON dict to an Excel .xlsx file.
-Ported from json_to_excel.py — duplicate format_worksheet removed,
-hostname handling fixed (uses dict .get() correctly).
+Includes: Summary, All Data, Origins, Origin Certificates, Origin Actions sheets.
 """
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -17,8 +17,10 @@ _alt_fill = PatternFill(start_color="E6F0F8", end_color="E6F0F8", fill_type="sol
 _group_fill = PatternFill(start_color="D9EAD3", end_color="D9EAD3", fill_type="solid")
 _prop_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
 _warn_fill = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
-_cert_warn_fill = PatternFill(start_color="FF8C00", end_color="FF8C00", fill_type="solid")  # orange for cert expiry
+_cert_warn_fill = PatternFill(start_color="FF8C00", end_color="FF8C00", fill_type="solid")
 _cert_warn_font = Font(color="FFFFFF", bold=True)
+_critical_fill = PatternFill(start_color="CC0000", end_color="CC0000", fill_type="solid")
+_critical_font = Font(color="FFFFFF", bold=True)
 _border = Border(
     left=Side(style="thin"),
     right=Side(style="thin"),
@@ -41,12 +43,39 @@ _HEADERS = [
     "Total Rules", "Max Depth", "Behavior Count", "Last Activated", "Activated By",
 ]
 
+_ORIGIN_HEADERS = [
+    "Property Name", "Property ID", "Version", "Akamai Network",
+    "Group Name", "Contract ID", "Rule Path", "Conditions",
+    "Origin Type", "Origin Hostname", "Resolved Hostname",
+    "HTTP Port", "HTTPS Port", "Uses HTTPS",
+    "Forward Host Header", "Custom FHH",
+    "SNI Enabled", "Effective SNI",
+    "Verification Mode", "Certs To Honor", "Trust Description",
+    "CN Match Values", "Observation Status",
+    "Configured Pins", "Configured CAs",
+    "Coverage Gaps",
+]
+
+_CERT_HEADERS = [
+    "Property Name", "Property ID", "Akamai Network",
+    "Origin Hostname", "Source", "Collection Method",
+    "Subject CN", "Subject", "SANs",
+    "Issuer CN", "Issuer Org", "Issuer",
+    "Serial Number", "SHA-256 Fingerprint",
+    "Not Before", "Not After", "Days Remaining",
+    "Expired", "Not Yet Valid",
+    "Role", "Key Algorithm", "Key Size",
+    "Signature Algorithm", "Self-Signed",
+]
+
+_ACTION_HEADERS = [
+    "Severity", "Property Name", "Property ID", "Version",
+    "Akamai Network", "Rule Path", "Origin Hostname",
+    "Finding", "Evidence", "Days Remaining", "Recommendation",
+]
+
 
 def generate_excel(json_path: str, xlsx_path: str) -> str:
-    """
-    Read the report JSON at json_path, produce an Excel workbook at xlsx_path.
-    Returns xlsx_path.
-    """
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -63,40 +92,49 @@ def generate_excel(json_path: str, xlsx_path: str) -> str:
         properties = group.get("properties", [])
 
         if not properties:
-            ws.append([group_name, group_id, parent_group_id, contract_id] + [""] * (len(_HEADERS) - 4))
+            ws.append(
+                [group_name, group_id, parent_group_id, contract_id]
+                + [""] * (len(_HEADERS) - 4)
+            )
             continue
 
         for prop in properties:
-            base = _prop_base(group_name, group_id, parent_group_id, contract_id, prop)
+            base = _prop_base(
+                group_name, group_id, parent_group_id, contract_id, prop
+            )
             cpcodes = prop.get("cpcodes", [])
             hostnames = prop.get("hostnames", [])
-
             flags = _prop_flags(prop)
-
             cert_tls = _cert_tls_cols(prop)
 
             if not cpcodes and not hostnames:
                 ws.append(base + [""] * 8 + [""] * 10 + cert_tls + flags)
                 continue
-
             if not hostnames:
                 for entry in _expand_cpcodes(cpcodes):
                     ws.append(base + entry + [""] * 10 + cert_tls + flags)
                 continue
-
             if not cpcodes:
                 for h in hostnames:
-                    ws.append(base + [""] * 8 + _hostname_cols(h) + cert_tls + flags)
+                    ws.append(
+                        base + [""] * 8 + _hostname_cols(h) + cert_tls + flags
+                    )
                 continue
-
             for entry in _expand_cpcodes(cpcodes):
                 for h in hostnames:
-                    ws.append(base + entry + _hostname_cols(h) + cert_tls + flags)
+                    ws.append(
+                        base + entry + _hostname_cols(h) + cert_tls + flags
+                    )
 
     _format_worksheet(ws)
 
     # ---- Summary sheet ----
     _build_summary_sheet(wb, data)
+
+    # ---- Origin sheets ----
+    _build_origins_sheet(wb, data)
+    _build_origin_certs_sheet(wb, data)
+    _build_origin_actions_sheet(wb, data)
 
     wb.save(xlsx_path)
     return xlsx_path
@@ -104,14 +142,12 @@ def generate_excel(json_path: str, xlsx_path: str) -> str:
 
 # ------------------------------------------------------------------ helpers
 
-def _prop_base(group_name, group_id, parent_group_id, contract_id, prop) -> list:
-    """Columns 1-10: group/property identity fields."""
+def _prop_base(group_name, group_id, parent_group_id, contract_id, prop):
     origin = prop.get("origin") or []
     if isinstance(origin, list):
         origin_str = ", ".join(str(x) for x in origin)
     else:
         origin_str = str(origin)
-
     return [
         group_name, group_id, parent_group_id, contract_id,
         prop.get("id", ""),
@@ -134,10 +170,12 @@ def _cell_value(value) -> str:
     return str(value)
 
 
-def _prop_flags(prop) -> list:
-    """Analysis flag fields, appended after cpcode/traffic/hostname/cert columns."""
+def _prop_flags(prop):
     cw_qr = prop.get("CW_QR") or []
-    cw_qr_str = ", ".join(str(x) for x in cw_qr) if isinstance(cw_qr, list) else str(cw_qr)
+    cw_qr_str = (
+        ", ".join(str(x) for x in cw_qr)
+        if isinstance(cw_qr, list) else str(cw_qr)
+    )
     return [
         prop.get("sro", ""),
         prop.get("site_shield", ""),
@@ -162,7 +200,6 @@ _STATUS_LABELS = {
 
 
 def _expand_cpcodes(cpcodes: list) -> list:
-    """Expand each cpcode entry into a [cpcode, description, product, traffic...] row fragment."""
     rows = []
     for entry in cpcodes:
         ids = entry.get("cpcode") or []
@@ -172,7 +209,6 @@ def _expand_cpcodes(cpcodes: list) -> list:
             rows.append([""] * 8)
             continue
         traffic = entry.get("traffic") or {}
-        # Check if traffic pull failed (vs. legitimate zero / no data)
         status = traffic.get("_status")
         if status:
             label = _STATUS_LABELS.get(status, f"Error: {status}")
@@ -200,7 +236,7 @@ def _expand_cpcodes(cpcodes: list) -> list:
     return rows or [[""] * 8]
 
 
-def _hostname_cols(h) -> list:
+def _hostname_cols(h):
     if isinstance(h, dict):
         cert = h.get("cert") or {}
         return [
@@ -218,8 +254,7 @@ def _hostname_cols(h) -> list:
     return [str(h), "", "", "", "", "", "", "", "", ""]
 
 
-def _cert_tls_cols(prop) -> list:
-    """Columns for Cert Expiry, Cert Type, Cert Issuer, Min TLS Version."""
+def _cert_tls_cols(prop):
     return [
         prop.get("cert_expiry", ""),
         prop.get("cert_expiry_days", ""),
@@ -230,32 +265,34 @@ def _cert_tls_cols(prop) -> list:
 
 
 def _format_worksheet(ws):
-    # Header row styling
     for cell in ws[1]:
         cell.fill = _header_fill
         cell.font = _header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.alignment = Alignment(
+            horizontal="center", vertical="center", wrap_text=True
+        )
         cell.border = _border
-
     ws.freeze_panes = "A2"
-
-    # Auto-width (capped at 40)
     for col in ws.columns:
-        max_len = max((len(str(c.value)) for c in col if c.value), default=0)
-        ws.column_dimensions[col[0].column_letter].width = min((max_len + 2) * 1.2, 40)
+        max_len = max(
+            (len(str(c.value)) for c in col if c.value), default=0
+        )
+        ws.column_dimensions[col[0].column_letter].width = min(
+            (max_len + 2) * 1.2, 40
+        )
 
-    # Determine column indices dynamically
     edge_gb_idx = _HEADERS.index("Edge GB")
     cert_expiry_idx = _HEADERS.index("Property Cert Expiry")
     hostname_cert_expiry_idx = _HEADERS.index("Hostname Cert Expiry")
 
-    # Row formatting
     for row_idx, row in enumerate(ws.iter_rows(min_row=2), 2):
         group_name = row[0].value
         property_id = row[4].value
-        # Check for zero traffic — flag red if Edge GB is 0 or empty
         edge_val = row[edge_gb_idx].value
-        is_zero_traffic = property_id and (edge_val is None or edge_val == "" or edge_val == 0 or edge_val == 0.0)
+        is_zero_traffic = property_id and (
+            edge_val is None or edge_val == "" or edge_val == 0
+            or edge_val == 0.0
+        )
         if is_zero_traffic:
             row_fill = _warn_fill
         else:
@@ -264,30 +301,34 @@ def _format_worksheet(ws):
             cell.fill = row_fill
             cell.border = _border
             cell.alignment = Alignment(vertical="center")
-
-        # Cert expiry warning — orange highlight for certs expiring within 30 days
         for idx in (cert_expiry_idx, hostname_cert_expiry_idx):
             cert_cell = row[idx]
-            if cert_cell.value and _is_cert_expiring_soon(str(cert_cell.value), 30):
+            if cert_cell.value and _is_cert_expiring_soon(
+                str(cert_cell.value), 30
+            ):
                 cert_cell.fill = _cert_warn_fill
                 cert_cell.font = _cert_warn_font
 
-    # Excel table
-    tab = Table(displayName="ReportData", ref=ws.dimensions)
-    tab.tableStyleInfo = TableStyleInfo(
-        name="TableStyleMedium2",
-        showFirstColumn=False,
-        showLastColumn=False,
-        showRowStripes=True,
-        showColumnStripes=False,
-    )
-    ws.add_table(tab)
+    if ws.max_row > 1:
+        tab = Table(displayName="ReportData", ref=ws.dimensions)
+        tab.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        ws.add_table(tab)
 
 
 def _is_cert_expiring_soon(expiry_str: str, days: int = 30) -> bool:
-    """Check if a certificate expiry date string is within N days from now."""
     from datetime import datetime
-    for fmt in ("%b %d %H:%M:%S %Y GMT", "%b  %d %H:%M:%S %Y GMT", "%Y-%m-%dT%H:%M:%SZ"):
+    for fmt in (
+        "%b %d %H:%M:%S %Y GMT",
+        "%b  %d %H:%M:%S %Y GMT",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S+00:00",
+    ):
         try:
             exp_dt = datetime.strptime(expiry_str, fmt)
             return 0 <= (exp_dt - datetime.utcnow()).days <= days
@@ -296,16 +337,12 @@ def _is_cert_expiring_soon(expiry_str: str, days: int = 30) -> bool:
     return False
 
 
+# ------------------------------------------------------------------ Summary
+
 def _build_summary_sheet(wb, data):
-    """Add a 'Summary' sheet with account-level aggregates."""
-    ws = wb.create_sheet("Summary", 0)  # Insert as first sheet
+    ws = wb.create_sheet("Summary", 0)
+    ws.append(["Metric", "Value"])
 
-    summary_headers = [
-        "Metric", "Value",
-    ]
-    ws.append(summary_headers)
-
-    # Compute aggregates
     all_props = []
     total_groups = 0
     products = {}
@@ -331,10 +368,8 @@ def _build_summary_sheet(wb, data):
                 adv_override_count += 1
             if prop.get("site_shield"):
                 site_shield_count += 1
-
             for entry in prop.get("cpcodes", []):
                 traffic = entry.get("traffic") or {}
-                # Count products
                 for p in (entry.get("product") or []):
                     if p:
                         products[p] = products.get(p, 0) + 1
@@ -350,16 +385,20 @@ def _build_summary_sheet(wb, data):
                 if traffic.get("cacheHitPct"):
                     cache_hit_sum += float(traffic["cacheHitPct"])
                     cache_hit_count += 1
-
-            # Check cert expiry
             cert_exp = prop.get("cert_expiry", "")
             if cert_exp and _is_cert_expiring_soon(cert_exp, 30):
                 expiring_certs.append(prop.get("name", "unknown"))
 
-    avg_offload = round(offload_sum / offload_count, 2) if offload_count else 0
-    avg_cache_hit = round(cache_hit_sum / cache_hit_count, 2) if cache_hit_count else 0
+    avg_offload = (
+        round(offload_sum / offload_count, 2) if offload_count else 0
+    )
+    avg_cache_hit = (
+        round(cache_hit_sum / cache_hit_count, 2) if cache_hit_count else 0
+    )
 
-    # Write rows
+    # Origin coverage
+    oc = data.get("origin_coverage", {})
+
     rows = [
         ("Total Groups", total_groups),
         ("Total Properties", len(all_props)),
@@ -372,12 +411,26 @@ def _build_summary_sheet(wb, data):
         ("Properties with Adv Override", adv_override_count),
         ("Properties with Site Shield", site_shield_count),
         ("", ""),
+        ("-- Origin Certificate Summary --", ""),
+        ("Total Origins Discovered", oc.get("total_origins", 0)),
+        ("Origins Probed (TLS)", oc.get("probed", 0)),
+        ("Origins HTTP-Only", oc.get("http_only", 0)),
+        ("Origins Unreachable", oc.get("unreachable", 0)),
+        ("Origins Skipped/Not Probed", oc.get("skipped", 0)),
+        ("Origins with Unresolved Variables", oc.get("unresolved", 0)),
+        ("Total Certificates Collected", oc.get("total_certificates", 0)),
+        ("Certificates Expiring in 30 Days", oc.get("expiring_30d", 0)),
+        ("Certificates Expired", oc.get("expired", 0)),
+        ("Critical Actions", oc.get("actions_critical", 0)),
+        ("Warning Actions", oc.get("actions_warning", 0)),
+        ("", ""),
         ("-- Color Legend --", ""),
         ("Blue header", "Column headers"),
         ("Yellow row", "Standard property data row"),
         ("Red row", "Property row where Edge GB is blank or 0"),
         ("Green row", "Group row with no properties"),
         ("Orange cert cell", "Certificate expires within 30 days"),
+        ("Dark red row", "Critical origin certificate action"),
         ("", ""),
         ("-- Products Breakdown --", ""),
     ]
@@ -386,14 +439,14 @@ def _build_summary_sheet(wb, data):
 
     if expiring_certs:
         rows.append(("", ""))
-        rows.append(("-- Certs Expiring Within 30 Days --", ""))
+        rows.append(("-- Edge Certs Expiring Within 30 Days --", ""))
         for name in expiring_certs:
             rows.append((f"  {name}", ""))
 
     for r in rows:
         ws.append(list(r))
 
-    # Style the summary sheet
+    # Style
     for cell in ws[1]:
         cell.fill = _header_fill
         cell.font = _header_font
@@ -406,6 +459,7 @@ def _build_summary_sheet(wb, data):
         "Red row": (_warn_fill, None),
         "Green row": (_group_fill, None),
         "Orange cert cell": (_cert_warn_fill, _cert_warn_font),
+        "Dark red row": (_critical_fill, _critical_font),
     }
 
     for row in ws.iter_rows(min_row=2):
@@ -418,10 +472,203 @@ def _build_summary_sheet(wb, data):
                 cell.fill = fill_font[0]
                 if fill_font[1]:
                     cell.font = fill_font[1]
-            # Orange highlight for cert expiry section
-            if cell.value and isinstance(cell.value, str) and "Certs Expiring" in cell.value:
+            if (
+                cell.value
+                and isinstance(cell.value, str)
+                and "Certs Expiring" in cell.value
+            ):
                 cell.fill = _cert_warn_fill
                 cell.font = _cert_warn_font
 
-    ws.column_dimensions["A"].width = 35
+    ws.column_dimensions["A"].width = 40
     ws.column_dimensions["B"].width = 20
+
+
+# ------------------------------------------------------------------ Origins sheet
+
+def _build_origins_sheet(wb, data):
+    ws = wb.create_sheet("Origins")
+    ws.append(_ORIGIN_HEADERS)
+
+    origins = data.get("origin_inventory", [])
+    if not origins:
+        ws.append(["Origin certificate details were not collected in this report."] + [""] * (len(_ORIGIN_HEADERS) - 1))
+        _format_origin_sheet(ws, _ORIGIN_HEADERS, "OriginsTable")
+        return
+
+    for o in origins:
+        cn_values = o.get("custom_cn_values", [])
+        cn_str = ", ".join(cn_values) if cn_values else ""
+        gaps = o.get("coverage_gaps", [])
+        gaps_str = "; ".join(gaps) if gaps else ""
+        ws.append([
+            o.get("property_name", ""),
+            o.get("property_id", ""),
+            o.get("property_version", ""),
+            o.get("akamai_network", ""),
+            o.get("group_name", ""),
+            o.get("contract_id", ""),
+            o.get("rule_path", ""),
+            o.get("conditions", ""),
+            o.get("origin_type", ""),
+            o.get("origin_hostname", ""),
+            o.get("resolved_hostname", ""),
+            o.get("http_port", ""),
+            o.get("https_port", ""),
+            o.get("uses_https", ""),
+            o.get("forward_host_header", ""),
+            o.get("custom_forward_host_header", ""),
+            o.get("sni_enabled", ""),
+            o.get("effective_sni", ""),
+            o.get("verification_mode", ""),
+            o.get("origin_certs_to_honor", ""),
+            o.get("trust_description", ""),
+            cn_str,
+            o.get("observation_status", ""),
+            len(o.get("configured_certificates", [])),
+            len(o.get("configured_cas", [])),
+            gaps_str,
+        ])
+
+    _format_origin_sheet(ws, _ORIGIN_HEADERS, "OriginsTable")
+
+
+def _format_origin_sheet(ws, headers, table_name):
+    for cell in ws[1]:
+        cell.fill = _header_fill
+        cell.font = _header_font
+        cell.alignment = Alignment(
+            horizontal="center", vertical="center", wrap_text=True
+        )
+        cell.border = _border
+    ws.freeze_panes = "A2"
+    for col in ws.columns:
+        max_len = max(
+            (len(str(c.value)) for c in col if c.value), default=0
+        )
+        ws.column_dimensions[col[0].column_letter].width = min(
+            (max_len + 2) * 1.2, 50
+        )
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.border = _border
+            cell.alignment = Alignment(vertical="center")
+
+    if ws.max_row > 1:
+        tab = Table(displayName=table_name, ref=ws.dimensions)
+        tab.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        ws.add_table(tab)
+
+
+# ------------------------------------------------------------------ Origin Certificates sheet
+
+def _build_origin_certs_sheet(wb, data):
+    ws = wb.create_sheet("Origin Certificates")
+    ws.append(_CERT_HEADERS)
+
+    certs = data.get("origin_certificates", [])
+    if not certs:
+        ws.append(["Origin certificate details were not collected in this report."] + [""] * (len(_CERT_HEADERS) - 1))
+        _format_origin_sheet(ws, _CERT_HEADERS, "OriginCertsTable")
+        return
+
+    for c in certs:
+        sans = c.get("san", [])
+        sans_str = ", ".join(sans) if isinstance(sans, list) else str(sans)
+        ws.append([
+            c.get("property_name", ""),
+            c.get("property_id", ""),
+            c.get("akamai_network", ""),
+            c.get("origin_hostname", ""),
+            c.get("source", ""),
+            c.get("collection_method", ""),
+            c.get("subject_cn", ""),
+            c.get("subject", ""),
+            sans_str,
+            c.get("issuer_cn", ""),
+            c.get("issuer_org", ""),
+            c.get("issuer", ""),
+            c.get("serial_number", ""),
+            c.get("sha256_fingerprint", ""),
+            c.get("not_before", ""),
+            c.get("not_after", ""),
+            c.get("days_remaining", ""),
+            c.get("is_expired", ""),
+            c.get("is_not_yet_valid", ""),
+            c.get("role", ""),
+            c.get("key_algorithm", ""),
+            c.get("key_size", ""),
+            c.get("signature_algorithm", ""),
+            c.get("is_self_signed", ""),
+        ])
+
+    _format_origin_sheet(ws, _CERT_HEADERS, "OriginCertsTable")
+
+    # Highlight expiring/expired certificates
+    days_col = _CERT_HEADERS.index("Days Remaining")
+    expired_col = _CERT_HEADERS.index("Expired")
+    for row in ws.iter_rows(min_row=2):
+        days_cell = row[days_col]
+        expired_cell = row[expired_col]
+        if expired_cell.value is True or str(expired_cell.value).lower() == "true":
+            for cell in row:
+                cell.fill = _critical_fill
+                cell.font = _critical_font
+        elif days_cell.value is not None and days_cell.value != "":
+            try:
+                d = int(days_cell.value)
+                if 0 <= d <= 30:
+                    for cell in row:
+                        cell.fill = _cert_warn_fill
+                        cell.font = _cert_warn_font
+            except (ValueError, TypeError):
+                pass
+
+
+# ------------------------------------------------------------------ Origin Actions sheet
+
+def _build_origin_actions_sheet(wb, data):
+    ws = wb.create_sheet("Origin Actions")
+    ws.append(_ACTION_HEADERS)
+
+    actions = data.get("origin_actions", [])
+    if not actions:
+        ws.append(["No origin certificate actions required."] + [""] * (len(_ACTION_HEADERS) - 1))
+        _format_origin_sheet(ws, _ACTION_HEADERS, "OriginActionsTable")
+        return
+
+    for a in actions:
+        ws.append([
+            a.get("severity", ""),
+            a.get("property_name", ""),
+            a.get("property_id", ""),
+            a.get("property_version", ""),
+            a.get("akamai_network", ""),
+            a.get("rule_path", ""),
+            a.get("origin_hostname", ""),
+            a.get("finding", ""),
+            a.get("evidence", ""),
+            a.get("days_remaining", ""),
+            a.get("recommendation", ""),
+        ])
+
+    _format_origin_sheet(ws, _ACTION_HEADERS, "OriginActionsTable")
+
+    # Color by severity
+    sev_col = _ACTION_HEADERS.index("Severity")
+    for row in ws.iter_rows(min_row=2):
+        sev = str(row[sev_col].value).lower()
+        if sev == "critical":
+            for cell in row:
+                cell.fill = _critical_fill
+                cell.font = _critical_font
+        elif sev == "warning":
+            for cell in row:
+                cell.fill = _cert_warn_fill
+                cell.font = _cert_warn_font

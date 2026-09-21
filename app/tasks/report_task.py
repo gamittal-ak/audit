@@ -20,6 +20,12 @@ from app.services.cache_service import get_or_fetch_rule_tree
 from app.services.dns_service import get_network_details
 from app.services.edgegrid_auth import auth_from_edgerc
 from app.services.excel_service import generate_excel
+from app.services.origin_cert_service import (
+    extract_origins_from_rule_tree,
+    probe_origin_certificate,
+    assess_origin,
+    generate_recommendations,
+)
 from app.services.property_analysis import (
     has_adv_override,
     has_custom_override,
@@ -36,7 +42,7 @@ from app.tasks.celery_app import celery_app
 
 @celery_app.task(bind=True, name="tasks.run_report")
 def run_report(self, switch_key: str, account_name: str, traffic_days: int = 15) -> dict:
-    """Entry point called by FastAPI. Bridges sync Celery → async pipeline."""
+    """Entry point called by FastAPI. Bridges sync Celery -> async pipeline."""
     return asyncio.run(_async_run_report(self, switch_key, account_name, traffic_days))
 
 
@@ -60,7 +66,17 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
     json_path = folder / f"report_{safe_name}_{timestamp}.json"
     xlsx_path = folder / f"report_{safe_name}_{timestamp}.xlsx"
 
-    final_report: Dict[str, Any] = {"report": []}
+    final_report: Dict[str, Any] = {
+        "schema_version": 2,
+        "audit_timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "report": [],
+        "origin_inventory": [],
+        "origin_certificates": [],
+        "origin_actions": [],
+        "origin_coverage": {},
+    }
+
+    probe_sem = asyncio.Semaphore(10)
 
     async with AkamaiClient(base_url, auth, sem) as client, \
                AkamaiClient(reporting_base_url, reporting_auth, sem) as reporting_client:
@@ -70,40 +86,65 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
         groups_data = await client.get_groups(switch_key)
         groups = groups_data.get("groups", {}).get("items", [])
 
-        # ---- Step 2: properties for all groups in parallel -----------------
+        # ---- Step 2: properties for all group/contract combos --------------
         _progress(task, f"Fetching properties for {len(groups)} groups", 15)
-        prop_results = await asyncio.gather(
-            *[
-                client.get_properties(
-                    switch_key, g["contractIds"][0], g["groupId"]
+
+        # Build all (group, contractId) pairs and deduplicate properties
+        fetch_tasks = []
+        fetch_keys = []
+        for g in groups:
+            for cid in g.get("contractIds", []):
+                fetch_tasks.append(
+                    client.get_properties(switch_key, cid, g["groupId"])
                 )
-                for g in groups
-                if g.get("contractIds")
-            ],
-            return_exceptions=True,
-        )
+                fetch_keys.append((g, cid))
 
-        # Build (group, properties) pairs
+        prop_results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+        # Deduplicate properties by propertyId, keeping group/contract context
+        seen_prop_ids = set()
         group_prop_pairs = []
-        for g, result in zip(
-            [g for g in groups if g.get("contractIds")], prop_results
-        ):
+        group_map = {}
+
+        for (g, cid), result in zip(fetch_keys, prop_results):
             if isinstance(result, Exception):
-                logger.warning("get_properties failed for group %s (%s): %s", g["groupId"], g.get("groupName"), result)
-                props = []
-            else:
-                props = result.get("properties", {}).get("items", [])
-            group_prop_pairs.append((g, props))
+                logger.warning(
+                    "get_properties failed for group %s contract %s: %s",
+                    g["groupId"], cid, result,
+                )
+                continue
+            props = result.get("properties", {}).get("items", [])
+            deduped = []
+            for p in props:
+                pid = p["propertyId"]
+                if pid not in seen_prop_ids:
+                    seen_prop_ids.add(pid)
+                    deduped.append(p)
+            if deduped or not props:
+                gkey = (g["groupId"], cid)
+                if gkey not in group_map:
+                    group_map[gkey] = (g, cid, [])
+                group_map[gkey][2].extend(deduped)
 
-        total_props = sum(len(p) for _, p in group_prop_pairs)
-
-        # ---- Step 3: analyse every property in parallel (no traffic yet) ----
-        _progress(task, f"Analysing {total_props} properties", 20)
-        prop_tasks = [
-            _process_property(task, client, redis, switch_key, g, prop, settings)
-            for g, props in group_prop_pairs
-            for prop in props
+        group_prop_pairs = [
+            (g, cid, props) for g, cid, props in group_map.values()
         ]
+        total_props = sum(len(props) for _, _, props in group_prop_pairs)
+
+        # ---- Step 3: analyse every property --------------------------------
+        _progress(task, f"Analysing {total_props} properties", 20)
+        prop_tasks = []
+        prop_meta = []
+        for g, cid, props in group_prop_pairs:
+            for prop in props:
+                prop_tasks.append(
+                    _process_property(
+                        task, client, redis, switch_key, g, cid, prop,
+                        settings, probe_sem,
+                    )
+                )
+                prop_meta.append((g, cid, prop))
+
         prop_outputs = await asyncio.gather(*prop_tasks, return_exceptions=True)
 
         # ---- Step 4: fetch ALL traffic in ONE batched call ----------------
@@ -147,7 +188,8 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
                     pass
             logger.info(
                 "Batched traffic fetch: status=%s, %d rows for %d cpcodes, %d cpcodes marked",
-                traffic_status, len(traffic_data), len(all_cpcodes), len(traffic_status_by_cpcode),
+                traffic_status, len(traffic_data), len(all_cpcodes),
+                len(traffic_status_by_cpcode),
             )
 
         # ---- Step 4.5: inject traffic into property outputs ---------------
@@ -165,7 +207,7 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
                     continue
                 if cp_key in traffic_data:
                     row = traffic_data[cp_key]
-                    m = row.get("metrics", row)  # flat or nested
+                    m = row.get("metrics", row)
                     cp_entry["traffic"] = {
                         "bytesOffload": round(float(m.get("offloadedBytesPercentage", 0)), 2),
                         "edgeBytes": round(float(m.get("edgeBytesSum", 0)) / _math.pow(1000, 3), 2),
@@ -176,36 +218,201 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
                 elif cp_key in traffic_status_by_cpcode:
                     cp_entry["traffic"] = {"_status": traffic_status_by_cpcode[cp_key]}
                 elif traffic_status not in ("ok", "partial"):
-                    # Traffic pull failed — mark it so Excel can differentiate from zero
                     cp_entry["traffic"] = {"_status": traffic_status}
 
-        # Reassemble into group → property tree
+        # ---- Step 5: collect origin inventory and certificates -------------
+        _progress(task, "Collecting origin certificates", 80)
+        all_origins = []
+        for out in prop_outputs:
+            if isinstance(out, Exception) or not out:
+                continue
+            all_origins.extend(out.get("_origin_inventory", []))
+
+        # Deduplicate probe targets
+        probe_targets = {}
+        for origin in all_origins:
+            if not origin.get("uses_https"):
+                continue
+            hostname = origin.get("resolved_hostname") or origin.get("origin_hostname", "")
+            if not hostname or "{{" in hostname:
+                continue
+            port = origin.get("https_port", 443)
+            sni = origin.get("effective_sni")
+            if sni == "__request_hostname__":
+                sni = None
+            key = (hostname, port, sni or hostname)
+            if key not in probe_targets:
+                probe_targets[key] = {"hostname": hostname, "port": port, "sni": sni}
+
+        # Probe all unique origin endpoints
+        probe_tasks = []
+        probe_keys = []
+        for key, target in probe_targets.items():
+            probe_tasks.append(
+                probe_origin_certificate(
+                    target["hostname"],
+                    target["port"],
+                    target["sni"],
+                    timeout=10.0,
+                    semaphore=probe_sem,
+                )
+            )
+            probe_keys.append(key)
+
+        if probe_tasks:
+            _progress(
+                task,
+                f"Probing {len(probe_tasks)} origin endpoints",
+                85,
+            )
+            probe_results = await asyncio.gather(
+                *probe_tasks, return_exceptions=True
+            )
+        else:
+            probe_results = []
+
+        probe_map = {}
+        for key, result in zip(probe_keys, probe_results):
+            if isinstance(result, Exception):
+                probe_map[key] = {
+                    "status": "error",
+                    "error": str(result),
+                    "hostname": key[0],
+                    "port": key[1],
+                }
+            else:
+                probe_map[key] = result
+
+        # Assess each origin
+        for origin in all_origins:
+            hostname = origin.get("resolved_hostname") or origin.get("origin_hostname", "")
+            port = origin.get("https_port", 443)
+            sni = origin.get("effective_sni")
+            if sni == "__request_hostname__":
+                sni = None
+            key = (hostname, port, sni or hostname)
+            live_probe = probe_map.get(key)
+            assess_origin(origin, live_probe)
+
+        # Generate recommendations
+        origin_actions = generate_recommendations(all_origins)
+
+        # Collect all certificates
+        all_certs_list = []
+        for origin in all_origins:
+            for cert in origin.get("live_certificates", []):
+                cert_record = dict(cert)
+                cert_record["origin_hostname"] = (
+                    origin.get("resolved_hostname") or origin["origin_hostname"]
+                )
+                cert_record["property_name"] = origin["property_name"]
+                cert_record["property_id"] = origin["property_id"]
+                cert_record["akamai_network"] = origin["akamai_network"]
+                all_certs_list.append(cert_record)
+            for cert in origin.get("configured_certificates", []):
+                cert_record = dict(cert)
+                cert_record["origin_hostname"] = (
+                    origin.get("resolved_hostname") or origin["origin_hostname"]
+                )
+                cert_record["property_name"] = origin["property_name"]
+                cert_record["property_id"] = origin["property_id"]
+                cert_record["akamai_network"] = origin["akamai_network"]
+                all_certs_list.append(cert_record)
+            for cert in origin.get("configured_cas", []):
+                cert_record = dict(cert)
+                cert_record["origin_hostname"] = (
+                    origin.get("resolved_hostname") or origin["origin_hostname"]
+                )
+                cert_record["property_name"] = origin["property_name"]
+                cert_record["property_id"] = origin["property_id"]
+                cert_record["akamai_network"] = origin["akamai_network"]
+                all_certs_list.append(cert_record)
+
+        # Coverage summary
+        origin_coverage = {
+            "total_origins": len(all_origins),
+            "probed": sum(
+                1 for o in all_origins
+                if o.get("observation_status") == "observed"
+            ),
+            "http_only": sum(
+                1 for o in all_origins
+                if o.get("observation_status") == "http_only"
+            ),
+            "unreachable": sum(
+                1 for o in all_origins
+                if o.get("observation_status") in (
+                    "dns_failure", "timeout", "tls_error",
+                    "connection_refused", "connection_error",
+                )
+            ),
+            "skipped": sum(
+                1 for o in all_origins
+                if o.get("observation_status") in ("skipped", "not_probed")
+            ),
+            "unresolved": sum(
+                1 for o in all_origins
+                if o.get("coverage_gaps")
+            ),
+            "total_certificates": len(all_certs_list),
+            "expiring_30d": sum(
+                1 for c in all_certs_list
+                if c.get("days_remaining") is not None and 0 <= c["days_remaining"] <= 30
+            ),
+            "expired": sum(
+                1 for c in all_certs_list
+                if c.get("is_expired")
+            ),
+            "actions_critical": sum(
+                1 for a in origin_actions if a["severity"] == "critical"
+            ),
+            "actions_warning": sum(
+                1 for a in origin_actions if a["severity"] == "warning"
+            ),
+        }
+
+        # Strip internal keys before serialization
+        serializable_origins = []
+        for o in all_origins:
+            so = {k: v for k, v in o.items() if not k.startswith("_")}
+            serializable_origins.append(so)
+
+        final_report["origin_inventory"] = serializable_origins
+        final_report["origin_certificates"] = all_certs_list
+        final_report["origin_actions"] = origin_actions
+        final_report["origin_coverage"] = origin_coverage
+
+        # Reassemble into group -> property tree
+        _progress(task, "Assembling report", 88)
         idx = 0
-        for g, props in group_prop_pairs:
+        for g, cid, props in group_prop_pairs:
             group_report = {
                 "groupname": g["groupName"],
                 "groupid": g["groupId"],
                 "parentgroupid": g.get("parentGroupId"),
-                "contractid": g["contractIds"][0],
+                "contractid": cid,
                 "properties": [],
             }
             for _ in props:
                 out = prop_outputs[idx]
                 idx += 1
                 if not isinstance(out, Exception) and out:
-                    group_report["properties"].append(out)
+                    clean = {
+                        k: v for k, v in out.items() if not k.startswith("_")
+                    }
+                    group_report["properties"].append(clean)
             final_report["report"].append(group_report)
 
-        # ---- Step 5: write JSON --------------------------------------------
+        # ---- Step 6: write JSON --------------------------------------------
         _progress(task, "Writing JSON report", 90)
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(final_report, f, indent=4)
+            json.dump(final_report, f, indent=4, default=str)
 
-        # ---- Step 5: generate Excel ----------------------------------------
+        # ---- Step 7: generate Excel ----------------------------------------
         _progress(task, "Generating Excel", 95)
         generate_excel(str(json_path), str(xlsx_path))
 
-    # Persist file paths + extend TTL so the UI can rediscover reports after Celery result expires
+    # Persist file paths
     task_id = task.request.id
     if task_id:
         await redis.hset(f"task:{task_id}", mapping={
@@ -213,7 +420,7 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
             "xlsx_path": str(xlsx_path),
             "completed_at": time.strftime("%Y-%m-%d %H:%M UTC"),
         })
-        await redis.expire(f"task:{task_id}", 30 * 86400)  # 30 days
+        await redis.expire(f"task:{task_id}", 30 * 86400)
 
     await redis.aclose()
 
@@ -226,47 +433,74 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
 
 # ------------------------------------------------------------------ property processing
 
-async def _process_property(task, client, redis, switch_key, group, prop_details, settings):
-    """Fetch and analyse a single property. Returns the property dict (traffic injected later)."""
-    contract_id = group["contractIds"][0]
+async def _process_property(
+    task, client, redis, switch_key, group, contract_id, prop_details,
+    settings, probe_sem,
+):
+    """Fetch and analyse a single property. Returns the property dict."""
     group_id = group["groupId"]
     property_id = prop_details["propertyId"]
-    version = str(prop_details.get("productionVersion") or prop_details.get("latestVersion") or 1)
 
     try:
-        # Rule tree + hostnames + activations fetched concurrently
+        # Determine versions to analyze
+        prod_version = prop_details.get("productionVersion")
+        staging_version = prop_details.get("stagingVersion")
+        latest_version = prop_details.get("latestVersion") or 1
+
+        # Primary version for existing analysis (backward compat)
+        primary_version = str(prod_version or latest_version)
+
+        # Fetch rule tree, hostnames, activations concurrently
         rule_tree, hostnames_result, activations_result = await asyncio.gather(
             get_or_fetch_rule_tree(
                 redis,
-                client.get_rule_tree(switch_key, contract_id, group_id, property_id, version),
+                client.get_rule_tree(
+                    switch_key, contract_id, group_id,
+                    property_id, primary_version,
+                ),
                 switch_key,
                 property_id,
-                version,
+                primary_version,
                 settings.rule_tree_cache_ttl,
             ),
-            client.get_hostnames(switch_key, contract_id, group_id, property_id, version),
-            client.get_activations(switch_key, contract_id, group_id, property_id),
+            client.get_hostnames(
+                switch_key, contract_id, group_id,
+                property_id, primary_version,
+            ),
+            client.get_activations(
+                switch_key, contract_id, group_id, property_id,
+            ),
             return_exceptions=True,
         )
         if isinstance(hostnames_result, Exception):
-            logger.warning("get_hostnames failed for property %s (skipping hostnames): %s", property_id, hostnames_result)
+            logger.warning(
+                "get_hostnames failed for property %s: %s",
+                property_id, hostnames_result,
+            )
             hostnames_data = {}
         else:
             hostnames_data = hostnames_result
 
-        # Extract latest production activation
+        # Extract activation info
         last_activated = ""
         activated_by = ""
         if not isinstance(activations_result, Exception) and activations_result:
-            activations = activations_result.get("activations", {}).get("items", [])
+            activations = (
+                activations_result.get("activations", {}).get("items", [])
+            )
             for act in activations:
-                if act.get("network") == "PRODUCTION" and act.get("status") == "ACTIVE":
-                    last_activated = act.get("updateDate", act.get("submitDate", ""))
+                if (
+                    act.get("network") == "PRODUCTION"
+                    and act.get("status") == "ACTIVE"
+                ):
+                    last_activated = act.get(
+                        "updateDate", act.get("submitDate", "")
+                    )
                     emails = act.get("notifyEmails", [])
                     activated_by = emails[0] if emails else ""
                     break
 
-        # Analyse rule tree (pure functions — no I/O)
+        # ---- Existing analysis (unchanged) ----
         cpcode_list, site_shield, custom_ss, client_chars, content_chars, origin_chars = \
             read_cpcode_list(rule_tree, switch_key)
         adv_override = has_adv_override(rule_tree)
@@ -278,10 +512,9 @@ async def _process_property(task, client, redis, switch_key, group, prop_details
         complexity = rule_tree_complexity(rule_tree)
         min_tls = extract_tls_settings(rule_tree)
 
-        # Build CP code list (traffic will be injected later by the batched fetch)
-        cpcode_rows = cpcode_list  # list of (cpc, desc, prod) tuples
+        # Build CP code list
         cpcodes_out = []
-        for cp_list, desc_list, prod_list in cpcode_rows:
+        for cp_list, desc_list, prod_list in cpcode_list:
             if not cp_list:
                 continue
             cpcodes_out.append({
@@ -312,8 +545,17 @@ async def _process_property(task, client, redis, switch_key, group, prop_details
         for i, h in enumerate(raw_hostnames):
             if not isinstance(h, dict):
                 continue
-            net = cname_results[i] if not isinstance(cname_results[i], Exception) else ("", "", "")
-            cert = cert_results[cert_idx] if cert_idx < len(cert_results) and not isinstance(cert_results[cert_idx], Exception) else None
+            net = (
+                cname_results[i]
+                if not isinstance(cname_results[i], Exception)
+                else ("", "", "")
+            )
+            cert = (
+                cert_results[cert_idx]
+                if cert_idx < len(cert_results)
+                and not isinstance(cert_results[cert_idx], Exception)
+                else None
+            )
             if h.get("cnameFrom"):
                 cert_idx += 1
             hostnames_out.append({
@@ -326,7 +568,7 @@ async def _process_property(task, client, redis, switch_key, group, prop_details
                 "cert": cert,
             })
 
-        # Aggregate cert info at property level (earliest expiry)
+        # Aggregate cert info at property level
         earliest_expiry = ""
         cert_issuer = ""
         cert_expiry_days = None
@@ -338,7 +580,6 @@ async def _process_property(task, client, redis, switch_key, group, prop_details
                     earliest_expiry = exp
                     cert_issuer = c.get("issuer", "")
 
-        # Determine cert type based on CNAME targets
         _SHARED_SUFFIXES = (".akamaized.net", ".edgesuite.net", ".edgekey.net")
         is_shared = any(
             (h.get("cnameTo") or "").lower().endswith(s)
@@ -352,13 +593,14 @@ async def _process_property(task, client, redis, switch_key, group, prop_details
         else:
             cert_type = ""
 
-        # Calculate days until cert expiry
         if earliest_expiry:
             try:
                 from datetime import datetime as _dt
-                from email.utils import parsedate_to_datetime
-                # Try common cert date formats
-                for fmt in ("%b %d %H:%M:%S %Y GMT", "%b  %d %H:%M:%S %Y GMT", "%Y-%m-%dT%H:%M:%SZ"):
+                for fmt in (
+                    "%b %d %H:%M:%S %Y GMT",
+                    "%b  %d %H:%M:%S %Y GMT",
+                    "%Y-%m-%dT%H:%M:%SZ",
+                ):
                     try:
                         exp_dt = _dt.strptime(earliest_expiry, fmt)
                         cert_expiry_days = (exp_dt - _dt.utcnow()).days
@@ -367,6 +609,85 @@ async def _process_property(task, client, redis, switch_key, group, prop_details
                         continue
             except Exception:
                 pass
+
+        # ---- Origin inventory for all relevant versions ----
+        origin_inventory = []
+        versions_to_analyze = []
+
+        if prod_version:
+            versions_to_analyze.append(
+                (prod_version, "PRODUCTION", rule_tree)
+            )
+        if staging_version and staging_version != prod_version:
+            try:
+                stg_tree = await get_or_fetch_rule_tree(
+                    redis,
+                    client.get_rule_tree(
+                        switch_key, contract_id, group_id,
+                        property_id, str(staging_version),
+                    ),
+                    switch_key,
+                    property_id,
+                    str(staging_version),
+                    settings.rule_tree_cache_ttl,
+                )
+                versions_to_analyze.append(
+                    (staging_version, "STAGING", stg_tree)
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to fetch staging tree for %s v%s: %s",
+                    property_id, staging_version, e,
+                )
+        elif staging_version and staging_version == prod_version:
+            # Same version on both networks - tag production origins also as staging
+            for o in origin_inventory:
+                if o.get("akamai_network") == "PRODUCTION":
+                    o["also_staging"] = True
+
+        if (
+            latest_version
+            and latest_version != prod_version
+            and latest_version != staging_version
+        ):
+            try:
+                draft_tree = await get_or_fetch_rule_tree(
+                    redis,
+                    client.get_rule_tree(
+                        switch_key, contract_id, group_id,
+                        property_id, str(latest_version),
+                    ),
+                    switch_key,
+                    property_id,
+                    str(latest_version),
+                    settings.rule_tree_cache_ttl,
+                )
+                versions_to_analyze.append(
+                    (latest_version, "LATEST_DRAFT", draft_tree)
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to fetch draft tree for %s v%s: %s",
+                    property_id, latest_version, e,
+                )
+
+        if not versions_to_analyze:
+            versions_to_analyze.append(
+                (latest_version, "LATEST", rule_tree)
+            )
+
+        for ver, network, tree in versions_to_analyze:
+            origins = extract_origins_from_rule_tree(
+                tree,
+                property_id=property_id,
+                property_name=prop_details.get("propertyName", ""),
+                property_version=ver,
+                akamai_network=network,
+                group_id=group_id,
+                group_name=group["groupName"],
+                contract_id=contract_id,
+            )
+            origin_inventory.extend(origins)
 
         return {
             "id": property_id,
@@ -396,6 +717,7 @@ async def _process_property(task, client, redis, switch_key, group, prop_details
             "min_tls": min_tls,
             "last_activated": last_activated,
             "activated_by": activated_by,
+            "_origin_inventory": origin_inventory,
         }
 
     except Exception:

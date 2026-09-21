@@ -56,7 +56,6 @@ async def cancel_report(task_id: str, request: Request, _=Depends(require_auth))
     """Revoke (cancel) a running Celery task."""
     try:
         celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
-        # Mark cancelled in Redis metadata
         r = await _redis()
         await r.hset(f"task:{task_id}", "cancelled", "1")
         await r.aclose()
@@ -88,8 +87,6 @@ async def recent_tasks(request: Request, _=Depends(require_auth)):
                 state = "UNKNOWN"
                 info = {}
 
-            # Celery result expires after 24h — if state is PENDING but we have
-            # file paths in the hash and the file exists, the task completed successfully.
             if state == "PENDING" and meta.get("json_path") and Path(meta["json_path"]).exists():
                 state = "SUCCESS"
                 info = {
@@ -111,7 +108,6 @@ async def recent_tasks(request: Request, _=Depends(require_auth)):
                 "step": info.get("step", "") if state in ("PROGRESS", "STARTED") else "",
             })
 
-        # Filesystem fallback: surface report files not tracked in Redis at all
         orphan_tasks = await _scan_orphaned_reports(r, seen_json_paths)
         tasks.extend(orphan_tasks)
 
@@ -128,7 +124,6 @@ async def recent_tasks(request: Request, _=Depends(require_auth)):
 
 
 async def _scan_orphaned_reports(r, seen_json_paths: set) -> list:
-    """Find JSON report files on disk that are not tracked in Redis and register them."""
     settings = get_settings()
     reports_dir = Path(settings.reports_base_dir)
     if not reports_dir.exists():
@@ -139,12 +134,9 @@ async def _scan_orphaned_reports(r, seen_json_paths: set) -> list:
         for json_file in sorted(reports_dir.rglob("report_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
             if str(json_file) in seen_json_paths:
                 continue
-            # Generate a stable synthetic task ID from the file path
             synthetic_id = str(uuid.uuid5(uuid.NAMESPACE_URL, str(json_file)))
-            # Check if already registered
             existing = await r.hgetall(f"task:{synthetic_id}")
             if not existing:
-                # Parse account name from directory name
                 account_name = json_file.parent.name
                 mtime = datetime.fromtimestamp(json_file.stat().st_mtime, tz=timezone.utc)
                 started_at = mtime.strftime("%Y-%m-%d %H:%M UTC")
@@ -178,7 +170,6 @@ async def _scan_orphaned_reports(r, seen_json_paths: set) -> list:
 
 @router.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str, request: Request, _=Depends(require_auth)):
-    """Delete a single task from the recent list and its report files."""
     try:
         r = await _redis()
         meta = await r.hgetall(f"task:{task_id}")
@@ -186,7 +177,6 @@ async def delete_task(task_id: str, request: Request, _=Depends(require_auth)):
         await r.delete(f"task:{task_id}")
         await r.aclose()
 
-        # Try to clean up report files
         _delete_report_files(task_id, meta)
 
         logger.info("Deleted task %s", task_id)
@@ -197,7 +187,6 @@ async def delete_task(task_id: str, request: Request, _=Depends(require_auth)):
 
 @router.post("/api/tasks/delete-selected")
 async def delete_selected_tasks(request: Request, _=Depends(require_auth)):
-    """Delete multiple selected tasks."""
     body = await request.json()
     task_ids = body.get("task_ids", [])
     if not task_ids:
@@ -219,7 +208,6 @@ async def delete_selected_tasks(request: Request, _=Depends(require_auth)):
 
 @router.post("/api/tasks/delete-all")
 async def delete_all_tasks(request: Request, _=Depends(require_auth)):
-    """Delete all tasks from the recent list."""
     try:
         r = await _redis()
         task_ids = await r.zrange("recent_tasks", 0, -1)
@@ -236,12 +224,6 @@ async def delete_all_tasks(request: Request, _=Depends(require_auth)):
 
 
 def _delete_report_files(task_id: str, meta: dict | None = None):
-    """Best-effort cleanup of report JSON/XLSX files for a task.
-
-    File paths come primarily from the task's Redis hash (`meta`) — the Celery
-    result expires after 24h and never exists for orphan-scanned reports, so it
-    is only a fallback.
-    """
     paths = set()
     for source in (meta or {},):
         for key in ("json_path", "xlsx_path"):
@@ -260,8 +242,6 @@ def _delete_report_files(task_id: str, meta: dict | None = None):
         pass
 
     for p in list(paths):
-        # Reports come in .json/.xlsx pairs; delete the sibling even if only
-        # one path was recorded, otherwise the orphan scanner re-registers it.
         fp = Path(p)
         for suffix in (".json", ".xlsx"):
             paths.add(str(fp.with_suffix(suffix)))
@@ -297,7 +277,6 @@ async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
             {"request": request, "error": "Could not retrieve task status. Please try refreshing."},
         )
 
-    # Celery result expires after 24h; fall back to Redis task hash for completed reports
     if state == "PENDING" and not info:
         try:
             r = await _redis()
@@ -337,6 +316,12 @@ async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
                 })
         chart_json = json.dumps({"properties": chart_props})
 
+        # Origin data for template
+        origin_inventory = report_data.get("origin_inventory", [])
+        origin_certificates = report_data.get("origin_certificates", [])
+        origin_actions = report_data.get("origin_actions", [])
+        origin_coverage = report_data.get("origin_coverage", {})
+
         return templates.TemplateResponse(
             "partials/report_view.html",
             {
@@ -346,6 +331,10 @@ async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
                 "account_name": account_name,
                 "xlsx_path": xlsx_path,
                 "chart_json": chart_json,
+                "origin_inventory": origin_inventory,
+                "origin_certificates": origin_certificates,
+                "origin_actions": origin_actions,
+                "origin_coverage": origin_coverage,
             },
         )
 
@@ -359,7 +348,6 @@ async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
             {"request": request, "error": error},
         )
 
-    # PENDING or PROGRESS — keep polling
     pct = info.get("pct", 0) if info else 0
     step = info.get("step", "Starting…") if info else "Starting…"
     return templates.TemplateResponse(
