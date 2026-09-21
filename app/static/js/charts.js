@@ -22,7 +22,7 @@
       edgeGB += t.edgeBytes || 0;
       midGB += t.midgressBytes || 0;
       originGB += t.originBytes || 0;
-      if (t.bytesOffload) { offloadSum += t.bytesOffload; offloadN++; }
+      if (typeof t.bytesOffload === 'number') { offloadSum += t.bytesOffload; offloadN++; }
     });
     return {
       name: p.name || p.id,
@@ -107,7 +107,7 @@
     new Chart(ctx2, {
       type: 'doughnut',
       data: {
-        labels: ['>90% (' + buckets.high + ')', '70-90% (' + buckets.mid + ')', '<70% (' + buckets.low + ')'],
+        labels: ['≥90% (' + buckets.high + ')', '70-90% (' + buckets.mid + ')', '<70% (' + buckets.low + ')'],
         datasets: [{
           data: [buckets.high, buckets.mid, buckets.low],
           backgroundColor: ['#198754', '#ffc107', '#dc3545'],
@@ -175,32 +175,6 @@
     });
   } else if (ctx3) {
     showNoData(ctx3);
-  }
-
-  // ---- Cert expiry warnings ----
-  const certWarnContainer = document.getElementById('certExpiryWarnings');
-  if (certWarnContainer) {
-    const expiring = propTraffic
-      .filter(p => p.certDays !== null && p.certDays !== undefined)
-      .filter(p => p.certDays <= 60)
-      .sort((a, b) => (a.certDays || 999) - (b.certDays || 999));
-
-    if (expiring.length) {
-      let html = '';
-      expiring.forEach(p => {
-        const isRed = p.certDays <= 30;
-        const cls = isRed ? 'danger' : 'warning';
-        const icon = isRed ? 'exclamation-triangle-fill' : 'exclamation-circle-fill';
-        html += '<span class="badge bg-' + cls + (isRed ? '' : ' text-dark') + ' me-2 mb-1">'
-          + '<i class="bi bi-' + icon + ' me-1"></i>'
-          + p.name + ' (' + p.certDays + 'd)'
-          + '</span>';
-      });
-      certWarnContainer.innerHTML = '<div class="d-flex flex-wrap align-items-center gap-1">'
-        + '<strong class="me-2"><i class="bi bi-shield-exclamation me-1"></i>Cert Warnings:</strong>'
-        + html + '</div>';
-      certWarnContainer.classList.remove('d-none');
-    }
   }
 
   // ---- Inline sparklines ----

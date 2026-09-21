@@ -1,32 +1,11 @@
-{# HTMX keeps polling because this partial retains the hx-* attributes #}
-<div
-  id="report-content"
-  hx-get="/api/reports/{{ task_id }}/status"
-  hx-trigger="every 2s"
-  hx-target="#report-content"
-  hx-swap="outerHTML"
->
-  <div class="card shadow-sm p-4">
-    <div class="d-flex align-items-center mb-3">
-      <div class="spinner-border spinner-border-sm text-primary me-3" role="status"></div>
-      <span class="fw-semibold">{{ step }}</span>
+<div id="report-content" hx-get="/api/reports/{{ task_id }}/status" hx-trigger="every 2s" hx-target="#report-content" hx-swap="outerHTML">
+  <section class="surface progress-panel" aria-labelledby="progress-title">
+    <span class="eyebrow">AUDIT IN PROGRESS</span><h1 id="progress-title">Collecting your account data</h1>
+    <p class="text-muted">You can return to report history while this audit runs.</p>
+    <div class="d-flex justify-content-between gap-3 mb-2"><span role="status">{{ step }}</span><strong>{{ pct }}%</strong></div>
+    <div class="progress" style="height:8px"><div class="progress-bar" role="progressbar" style="width:{{ pct }}%" aria-valuenow="{{ pct }}" aria-valuemin="0" aria-valuemax="100" aria-label="Audit progress"></div></div>
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mt-4"><a href="/" class="btn btn-outline-secondary">Back to reports</a>
+      <form method="post" action="/api/reports/{{ task_id }}/cancel" onsubmit="return confirm('Cancel this running audit?');"><button type="submit" class="btn btn-outline-danger btn-sm">Cancel audit</button></form>
     </div>
-    <div class="progress" style="height:20px">
-      <div
-        class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
-        role="progressbar"
-        style="width: {{ pct }}%"
-        aria-valuenow="{{ pct }}"
-        aria-valuemin="0"
-        aria-valuemax="100"
-      >{{ pct }}%</div>
-    </div>
-    <p class="text-muted small mt-2 mb-3">This may take several minutes for large accounts.</p>
-    <form method="post" action="/api/reports/{{ task_id }}/cancel"
-          onsubmit="return confirm('Cancel this report?');">
-      <button type="submit" class="btn btn-outline-danger btn-sm">
-        <i class="bi bi-x-circle me-1"></i>Cancel Report
-      </button>
-    </form>
-  </div>
+  </section>
 </div>

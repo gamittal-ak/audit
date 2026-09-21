@@ -1,0 +1,142 @@
+<div class="section-heading"><div><h2>Origin audit</h2><p>Review findings, then inspect the origins and certificates behind them.</p></div></div>
+{% if not origin_coverage %}
+<div class="surface empty-state"><i class="bi bi-shield-lock" aria-hidden="true"></i><strong>Origin data was not collected</strong><p>This report predates origin auditing. Run a new audit to collect it.</p></div>
+{% else %}
+<div class="origin-stats" aria-label="Origin coverage">
+{% for label,key in [('Origins found','total_origins'),('TLS probed','probed'),('HTTP only','http_only'),('Unreachable','unreachable'),('Expired certificates','expired'),('Expiring in 30 days','expiring_30d')] %}
+<div class="origin-stat"><strong>{{ origin_coverage.get(key,0) }}</strong>{{ label }}</div>
+{% endfor %}</div>
+<nav class="nav origin-nav" role="tablist" aria-label="Origin audit views">
+{% for key,label,items in [('actions','Actions',origin_actions),('inventory','Inventory',origin_inventory),('certificates','Certificates',origin_certificates)] %}
+<button type="button" class="nav-link {{ 'active' if loop.first else '' }}" id="origin-{{ key }}-tab" data-bs-toggle="tab" data-bs-target="#origin-{{ key }}" role="tab" aria-controls="origin-{{ key }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ label }}<span class="tab-count">{{ items | length }}</span></button>
+{% endfor %}</nav>
+<div class="tab-content">
+<section class="tab-pane origin-panel active" id="origin-actions" role="tabpanel" aria-labelledby="origin-actions-tab" tabindex="0">
+<div class="origin-toolbar">
+<div class="search-field"><i class="bi bi-search" aria-hidden="true"></i><input type="search" class="form-control origin-search" placeholder="Search actions…" aria-label="Search origin actions" oninput="AuditUI.filterOrigins(this)"></div>
+<select class="form-select origin-filter" aria-label="Filter origin actions" onchange="AuditUI.filterOrigins(this)"><option value="">All severities</option><option value="critical">Critical</option><option value="warning">Warning</option><option value="info">Info</option></select>
+<button class="btn btn-outline-secondary btn-sm" type="button" onclick="AuditUI.resetOrigins(this)">Reset</button>
+</div><p class="result-count origin-result-count" role="status"></p>
+{% if origin_actions %}
+<div class="table-responsive" tabindex="0" role="region" aria-label="Origin actions table"><table class="table table-sm table-hover mb-0 small">
+            <thead class="table-dark">
+              <tr>
+                <th>Severity</th>
+                <th>Property</th>
+                <th>Origin</th>
+                <th>Network</th>
+                <th>Finding</th>
+                <th>Days</th>
+                <th>Recommendation</th>
+              </tr>
+            </thead>
+            <tbody data-origin-rows>
+            {% for a in origin_actions %}
+              <tr data-origin-row data-status="{{ a.severity }}" class="{% if a.severity == 'critical' %}table-danger{% elif a.severity == 'warning' %}table-warning{% endif %}">
+                <td>
+                  {% if a.severity == 'critical' %}<span class="badge bg-danger">Critical</span>
+                  {% elif a.severity == 'warning' %}<span class="badge bg-warning text-dark">Warning</span>
+                  {% else %}<span class="badge bg-info">Info</span>{% endif %}
+                </td>
+                <td class="fw-semibold">{{ a.property_name }}</td>
+                <td class="font-monospace small">{{ a.origin_hostname }}</td>
+                <td><span class="badge {% if a.akamai_network == 'PRODUCTION' %}bg-primary{% elif a.akamai_network == 'STAGING' %}bg-secondary{% else %}bg-light text-dark{% endif %}">{{ a.akamai_network }}</span></td>
+                <td>{{ a.finding }}</td>
+                <td class="text-center">{{ a.days_remaining if a.days_remaining is not none else '' }}</td>
+                <td class="small">{{ a.recommendation }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table></div>
+<div class="empty-state origin-no-match" hidden>No matching rows. Try another search or reset the filters.</div>
+{% else %}<div class="surface empty-state">No origin actions reported. Check inventory coverage for origins that could not be verified.</div>{% endif %}
+</section><section class="tab-pane origin-panel " id="origin-inventory" role="tabpanel" aria-labelledby="origin-inventory-tab" tabindex="0">
+<div class="origin-toolbar">
+<div class="search-field"><i class="bi bi-search" aria-hidden="true"></i><input type="search" class="form-control origin-search" placeholder="Search inventory…" aria-label="Search origin inventory" oninput="AuditUI.filterOrigins(this)"></div>
+<select class="form-select origin-filter" aria-label="Filter origin inventory" onchange="AuditUI.filterOrigins(this)"><option value="">All statuses</option>{% for status in origin_inventory | map(attribute='observation_status') | unique %}<option value="{{ status }}">{{ status | replace('_',' ') | title }}</option>{% endfor %}</select>
+<button class="btn btn-outline-secondary btn-sm" type="button" onclick="AuditUI.resetOrigins(this)">Reset</button>
+</div><p class="result-count origin-result-count" role="status"></p>
+{% if origin_inventory %}
+<div class="table-responsive" tabindex="0" role="region" aria-label="Origin inventory table"><table class="table table-sm table-hover mb-0 small">
+              <thead class="table-dark">
+                <tr>
+                  <th>Property</th>
+                  <th>Version</th>
+                  <th>Network</th>
+                  <th>Rule Path</th>
+                  <th>Origin</th>
+                  <th>Type</th>
+                  <th>HTTPS</th>
+                  <th>SNI</th>
+                  <th>Trust</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody data-origin-rows>
+              {% for o in origin_inventory %}
+                <tr data-origin-row data-status="{{ o.observation_status }}">
+                  <td class="fw-semibold">{{ o.property_name }}</td>
+                  <td>v{{ o.property_version }}</td>
+                  <td><span class="badge {% if o.akamai_network == 'PRODUCTION' %}bg-primary{% elif o.akamai_network == 'STAGING' %}bg-secondary{% elif o.akamai_network == 'LATEST_DRAFT' %}bg-light text-dark{% else %}bg-info{% endif %}">{{ o.akamai_network }}</span></td>
+                  <td class="small text-muted">{{ o.rule_path }}</td>
+                  <td class="font-monospace small">{{ o.resolved_hostname or o.origin_hostname }}</td>
+                  <td>{{ o.origin_type }}</td>
+                  <td>
+                    {% if o.uses_https %}<span class="text-success"><i class="bi bi-lock-fill" aria-hidden="true"></i> HTTPS</span>
+                    {% else %}<span class="text-muted">HTTP</span>{% endif %}
+                  </td>
+                  <td class="small">{{ o.effective_sni or '' }}</td>
+                  <td class="small">{{ o.trust_description }}</td>
+                  <td>
+                    {% if o.observation_status == 'observed' %}<span class="badge bg-success">Observed</span>
+                    {% elif o.observation_status == 'http_only' %}<span class="badge bg-secondary">HTTP Only</span>
+                    {% elif o.observation_status == 'not_probed' %}<span class="badge bg-light text-dark">Not Probed</span>
+                    {% elif o.observation_status == 'skipped' %}<span class="badge bg-light text-dark">Skipped</span>
+                    {% else %}<span class="badge bg-warning text-dark">{{ o.observation_status }}</span>{% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table></div>
+<div class="empty-state origin-no-match" hidden>No matching rows. Try another search or reset the filters.</div>
+{% else %}<div class="surface empty-state">No origins were discovered in this audit.</div>{% endif %}
+</section><section class="tab-pane origin-panel " id="origin-certificates" role="tabpanel" aria-labelledby="origin-certificates-tab" tabindex="0">
+<div class="origin-toolbar">
+<div class="search-field"><i class="bi bi-search" aria-hidden="true"></i><input type="search" class="form-control origin-search" placeholder="Search certificates…" aria-label="Search origin certificates" oninput="AuditUI.filterOrigins(this)"></div>
+<select class="form-select origin-filter" aria-label="Filter origin certificates" onchange="AuditUI.filterOrigins(this)"><option value="">All statuses</option><option value="expired">Expired</option><option value="expiring">Expiring within 30 days</option><option value="not-yet-valid">Not yet valid</option></select>
+<button class="btn btn-outline-secondary btn-sm" type="button" onclick="AuditUI.resetOrigins(this)">Reset</button>
+</div><p class="result-count origin-result-count" role="status"></p>
+{% if origin_certificates %}
+<div class="table-responsive" tabindex="0" role="region" aria-label="Origin certificates table"><table class="table table-sm table-hover mb-0 small">
+              <thead class="table-dark">
+                <tr>
+                  <th>Origin</th>
+                  <th>Source</th>
+                  <th>Subject CN</th>
+                  <th>Issuer</th>
+                  <th>Not After</th>
+                  <th>Days</th>
+                  <th>Key</th>
+                  <th>Fingerprint</th>
+                </tr>
+              </thead>
+              <tbody data-origin-rows>
+              {% for c in origin_certificates %}
+                <tr data-origin-row data-status="{{ 'expired' if c.is_expired else 'not-yet-valid' if c.is_not_yet_valid else 'expiring' if c.days_remaining is number and c.days_remaining <= 30 else 'other' }}" class="{% if c.is_expired %}table-danger{% elif c.days_remaining is defined and c.days_remaining is not none and c.days_remaining <= 30 %}table-warning{% endif %}">
+                  <td class="font-monospace small">{{ c.origin_hostname }}<div class="text-muted">{{ c.property_name }} · {{ c.akamai_network }}</div></td>
+                  <td><span class="badge {% if c.source == 'live_leaf' %}bg-success{% elif c.source == 'configured_pin' %}bg-info{% elif c.source == 'configured_ca' %}bg-secondary{% else %}bg-light text-dark{% endif %}">{{ c.source }}</span></td>
+                  <td>{{ c.subject_cn }}</td>
+                  <td class="small">{{ c.issuer_org or c.issuer_cn or '' }}</td>
+                  <td class="small">{{ c.not_after }}</td>
+                  <td class="text-center {% if c.is_expired %}text-danger fw-bold{% elif c.days_remaining is defined and c.days_remaining is not none and c.days_remaining <= 30 %}text-warning fw-bold{% endif %}">
+                    {{ c.days_remaining if c.days_remaining is not none else '' }}
+                  </td>
+                  <td class="small">{{ c.key_algorithm }}{% if c.key_size %} {{ c.key_size }}{% endif %}</td>
+                  <td class="font-monospace small text-muted"><details><summary>{{ c.sha256_fingerprint[:16] if c.sha256_fingerprint else '—' }}</summary><span>{{ c.sha256_fingerprint or '' }}</span></details></td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table></div>
+<div class="empty-state origin-no-match" hidden>No matching rows. Try another search or reset the filters.</div>
+{% else %}<div class="surface empty-state">No certificates were collected. Check the inventory for HTTP-only, unreachable, or unprobed origins.</div>{% endif %}
+</section></div><p class="origin-context">Certificate status reflects this audit's collection time. Missing or unreachable origins have not been verified. Download Excel for the complete data and supporting evidence.</p>{% endif %}

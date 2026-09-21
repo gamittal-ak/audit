@@ -168,100 +168,114 @@ async def _scan_orphaned_reports(r, seen_json_paths: set) -> list:
     return orphans
 
 
+
+async def _delete_tasks(task_ids: list[str]) -> dict:
+    """Delete terminal reports, retaining metadata when cleanup fails."""
+    deleted, failed = [], []
+    r = await _redis()
+    try:
+        for task_id in dict.fromkeys(task_ids):
+            try:
+                meta = await r.hgetall(f"task:{task_id}")
+                if not meta:
+                    failed.append({"task_id": task_id, "error": "Report no longer exists. Refresh the list."})
+                    continue
+                result = celery_app.AsyncResult(task_id)
+                state = result.state
+                stored_report = meta.get("json_path") and Path(meta["json_path"]).exists()
+                if not meta.get("cancelled") and (
+                    state in ("STARTED", "PROGRESS", "RETRY")
+                    or (state == "PENDING" and not stored_report)
+                ):
+                    failed.append({"task_id": task_id, "error": "A report is still running or queued. Cancel it before deleting."})
+                    continue
+                _delete_report_files(task_id, meta)
+                async with r.pipeline(transaction=True) as pipe:
+                    pipe.zrem("recent_tasks", task_id)
+                    pipe.delete(f"task:{task_id}")
+                    await pipe.execute()
+                deleted.append(task_id)
+            except Exception:
+                logger.exception("Failed to delete report %s", task_id)
+                failed.append({"task_id": task_id, "error": "Could not fully delete a report. Please retry."})
+    finally:
+        await r.aclose()
+    return {"ok": not failed, "deleted": len(deleted), "deleted_ids": deleted, "failed": failed}
+
+
 @router.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str, request: Request, _=Depends(require_auth)):
+    if not request.session.get("authenticated"):
+        return JSONResponse({"error": "Please sign in again."}, status_code=401)
     try:
-        r = await _redis()
-        meta = await r.hgetall(f"task:{task_id}")
-        await r.zrem("recent_tasks", task_id)
-        await r.delete(f"task:{task_id}")
-        await r.aclose()
-
-        _delete_report_files(task_id, meta)
-
-        logger.info("Deleted task %s", task_id)
+        return JSONResponse(await _delete_tasks([task_id]))
     except Exception:
-        logger.exception("Failed to delete task %s", task_id)
-    return JSONResponse({"ok": True})
+        logger.exception("Report deletion unavailable")
+        return JSONResponse({"error": "Deletion is unavailable. Please retry."}, status_code=503)
 
 
 @router.post("/api/tasks/delete-selected")
 async def delete_selected_tasks(request: Request, _=Depends(require_auth)):
-    body = await request.json()
-    task_ids = body.get("task_ids", [])
-    if not task_ids:
-        return JSONResponse({"ok": True, "deleted": 0})
-
+    if not request.session.get("authenticated"):
+        return JSONResponse({"error": "Please sign in again."}, status_code=401)
     try:
-        r = await _redis()
-        for tid in task_ids:
-            meta = await r.hgetall(f"task:{tid}")
-            await r.zrem("recent_tasks", tid)
-            await r.delete(f"task:{tid}")
-            _delete_report_files(tid, meta)
-        await r.aclose()
-        logger.info("Deleted %d tasks: %s", len(task_ids), task_ids)
+        body = await request.json()
+        task_ids = body.get("task_ids") if isinstance(body, dict) else None
+        if not isinstance(task_ids, list) or any(not isinstance(tid, str) or not tid for tid in task_ids):
+            return JSONResponse({"error": "Select valid reports to delete."}, status_code=400)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "Invalid deletion request."}, status_code=400)
+    try:
+        return JSONResponse(await _delete_tasks(task_ids))
     except Exception:
-        logger.exception("Failed to delete selected tasks")
-    return JSONResponse({"ok": True, "deleted": len(task_ids)})
+        logger.exception("Bulk deletion unavailable")
+        return JSONResponse({"error": "Deletion is unavailable. Please retry."}, status_code=503)
 
 
 @router.post("/api/tasks/delete-all")
 async def delete_all_tasks(request: Request, _=Depends(require_auth)):
+    if not request.session.get("authenticated"):
+        return JSONResponse({"error": "Please sign in again."}, status_code=401)
     try:
         r = await _redis()
-        task_ids = await r.zrange("recent_tasks", 0, -1)
-        for tid in task_ids:
-            meta = await r.hgetall(f"task:{tid}")
-            await r.delete(f"task:{tid}")
-            _delete_report_files(tid, meta)
-        await r.delete("recent_tasks")
-        await r.aclose()
-        logger.info("Deleted all %d tasks", len(task_ids))
+        try:
+            task_ids = await r.zrange("recent_tasks", 0, -1)
+        finally:
+            await r.aclose()
+        return JSONResponse(await _delete_tasks(task_ids))
     except Exception:
-        logger.exception("Failed to delete all tasks")
-    return JSONResponse({"ok": True})
+        logger.exception("Bulk deletion unavailable")
+        return JSONResponse({"error": "Deletion is unavailable. Please retry."}, status_code=503)
 
 
 def _delete_report_files(task_id: str, meta: dict | None = None):
     paths = set()
-    for source in (meta or {},):
+    for key in ("json_path", "xlsx_path"):
+        if (meta or {}).get(key):
+            paths.add(meta[key])
+    result = celery_app.AsyncResult(task_id)
+    info = result.info
+    if isinstance(info, dict):
         for key in ("json_path", "xlsx_path"):
-            p = source.get(key)
-            if p:
-                paths.add(p)
-    try:
-        result = celery_app.AsyncResult(task_id)
-        if result and isinstance(result.info, dict):
-            for key in ("json_path", "xlsx_path"):
-                p = result.info.get(key)
-                if p:
-                    paths.add(p)
-        result.forget()
-    except Exception:
-        pass
-
-    for p in list(paths):
-        fp = Path(p)
+            if info.get(key):
+                paths.add(info[key])
+    for path in list(paths):
         for suffix in (".json", ".xlsx"):
-            paths.add(str(fp.with_suffix(suffix)))
-
-    parents = set()
-    for p in paths:
-        try:
-            fp = Path(p)
-            fp.unlink(missing_ok=True)
-            parents.add(fp.parent)
-        except Exception:
-            logger.exception("Could not delete report file %s", p)
-
+            paths.add(str(Path(path).with_suffix(suffix)))
     reports_dir = Path(get_settings().reports_base_dir).resolve()
-    for parent in parents:
+    resolved = [Path(path).resolve() for path in paths]
+    if any(not path.is_relative_to(reports_dir) or path == reports_dir for path in resolved):
+        raise ValueError("Report path is outside the reports directory")
+    # Propagate failures so the UI can report partial deletion and offer a retry.
+    for path in resolved:
+        path.unlink(missing_ok=True)
+    result.forget()
+    for parent in {path.parent for path in resolved}:
         try:
-            if parent.resolve() != reports_dir and not any(parent.iterdir()):
+            if parent != reports_dir and not any(parent.iterdir()):
                 parent.rmdir()
-        except Exception:
-            pass
+        except OSError:
+            logger.debug("Report directory was not empty: %s", parent)
 
 
 @router.get("/api/reports/{task_id}/status", response_class=HTMLResponse)
