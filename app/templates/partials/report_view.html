@@ -13,8 +13,9 @@
   {% if p.cert_expiry_days is number and p.cert_expiry_days <= 30 %}{% set ns.edge_warnings = ns.edge_warnings + 1 %}{% endif %}
 {% endfor %}
 {% set oc = origin_coverage or {} %}
+{% set fs = origin_findings_summary | default({}) %}
 <div class="report-heading">
-  <div><span class="eyebrow">ACCOUNT AUDIT</span><h1>{{ account_name }}</h1><p><span class="badge bg-success me-2">Complete</span>Collected account configuration, traffic, and certificate findings</p></div>
+  <div><h1>{{ account_name }}</h1><p><span class="badge bg-success me-2">Complete</span>{% if audit_timestamp %}As of {{ audit_timestamp | replace('T',' ') | replace('Z',' UTC') | replace('+00:00',' UTC') }}{% else %}Account configuration, traffic, and certificate findings{% endif %}</p></div>
   <a href="/api/reports/{{ task_id }}/download/xlsx" class="btn btn-primary" download><i class="bi bi-file-earmark-spreadsheet me-2" aria-hidden="true"></i>Download Excel</a>
 </div>
 <div class="metric-strip" aria-label="Report summary">
@@ -29,8 +30,8 @@
   {% if ns.edge_warnings %}
   <button type="button" class="warning-link" onclick="AuditUI.showEdgeWarnings()"><i class="bi bi-shield-exclamation" aria-hidden="true"></i><span><strong>Edge certificate warnings</strong><br>{{ ns.edge_warnings }} {{ 'property' if ns.edge_warnings == 1 else 'properties' }} with certificates expired or due within 30 days</span><i class="bi bi-arrow-right" aria-hidden="true"></i></button>
   {% endif %}
-  {% if oc.get('expired',0) or oc.get('expiring_30d',0) or origin_actions %}
-  <button type="button" class="warning-link {{ 'critical' if oc.get('expired',0) or oc.get('actions_critical',0) else '' }}" onclick="AuditUI.showOrigins('actions')"><i class="bi bi-shield-exclamation" aria-hidden="true"></i><span><strong>Origin certificate warnings</strong><br>{{ oc.get('expired',0) }} expired · {{ oc.get('expiring_30d',0) }} expiring within 30 days · {{ origin_actions | length }} actions</span><i class="bi bi-arrow-right" aria-hidden="true"></i></button>
+  {% if origin_actions %}
+  <button type="button" class="warning-link {{ 'critical' if fs.get('critical', oc.get('actions_critical',0)) else 'coverage' if not fs.get('warning', oc.get('actions_warning',0)) else '' }}" onclick="AuditUI.showOrigins('actions')"><i class="bi bi-shield-exclamation" aria-hidden="true"></i><span><strong>Origin certificate findings</strong><br>{{ fs.get('critical', oc.get('actions_critical',0)) }} critical · {{ fs.get('warning', oc.get('actions_warning',0)) }} warnings · {{ fs.get('renewal_review',0) }} renewal {{ 'review' if fs.get('renewal_review',0) == 1 else 'reviews' }}</span><i class="bi bi-arrow-right" aria-hidden="true"></i></button>
   {% endif %}
   {% if oc.get('unreachable',0) or oc.get('skipped',0) or oc.get('unresolved',0) %}
   <button type="button" class="warning-link coverage" onclick="AuditUI.showOrigins('inventory')"><i class="bi bi-info-circle" aria-hidden="true"></i><span><strong>Origin collection coverage</strong><br>{{ oc.get('unreachable',0) }} unreachable · {{ oc.get('skipped',0) }} not probed · {{ oc.get('unresolved',0) }} unresolved</span><i class="bi bi-arrow-right" aria-hidden="true"></i></button>
@@ -60,6 +61,6 @@
   </section>
 </div>
 <script id="report-chart-data" type="application/json">{{ chart_json | replace('<', '\\u003c') | safe }}</script>
-<script src="/static/js/charts.js?v=20260921-1"></script>
+<script src="/static/js/charts.js?v=20260922-1"></script>
 <script>AuditUI.initReport();</script>
 </div>

@@ -13,6 +13,8 @@ import ssl
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.services.origin_findings import certificate_finding
+
 logger = logging.getLogger(__name__)
 
 _BLOCKED_NETWORKS = [
@@ -643,49 +645,14 @@ def assess_origin(origin, live_probe):
         + origin.get("configured_cas", [])
     )
 
-    for cert in all_certs:
-        days = cert.get("days_remaining")
-        if days is None:
-            continue
-        src = cert.get("source", "unknown")
-        cn = cert.get("subject_cn", "unknown")
-        fp = cert.get("sha256_fingerprint", "")[:16]
-        if days < 0:
-            findings.append({
-                "severity": "critical",
-                "finding": "Expired certificate (%s)" % src,
-                "evidence": "CN=%s, expired %d days ago, fingerprint=%s..."
-                % (cn, abs(days), fp),
-                "days_remaining": days,
-                "cert_fingerprint": cert.get("sha256_fingerprint", ""),
-            })
-        elif days <= 7:
-            findings.append({
-                "severity": "critical",
-                "finding": "Certificate expiring within 7 days (%s)" % src,
-                "evidence": "CN=%s, %d days remaining, fingerprint=%s..."
-                % (cn, days, fp),
-                "days_remaining": days,
-                "cert_fingerprint": cert.get("sha256_fingerprint", ""),
-            })
-        elif days <= 30:
-            findings.append({
-                "severity": "warning",
-                "finding": "Certificate expiring within 30 days (%s)" % src,
-                "evidence": "CN=%s, %d days remaining, fingerprint=%s..."
-                % (cn, days, fp),
-                "days_remaining": days,
-                "cert_fingerprint": cert.get("sha256_fingerprint", ""),
-            })
-        elif days <= 60:
-            findings.append({
-                "severity": "info",
-                "finding": "Certificate expiring within 60 days (%s)" % src,
-                "evidence": "CN=%s, %d days remaining, fingerprint=%s..."
-                % (cn, days, fp),
-                "days_remaining": days,
-                "cert_fingerprint": cert.get("sha256_fingerprint", ""),
-            })
+    seen_cert_findings = set()
+    for index, cert in enumerate(all_certs):
+        finding = certificate_finding(cert, origin)
+        if finding:
+            key = (cert.get("sha256_fingerprint") or index, cert.get("source"), finding["code"])
+            if key not in seen_cert_findings:
+                findings.append(finding)
+                seen_cert_findings.add(key)
 
     if live_probe and live_probe.get("probes"):
         fps = set()
@@ -718,7 +685,7 @@ def generate_recommendations(origins):
     actions = []
     for origin in origins:
         for finding in origin.get("findings", []):
-            if finding["severity"] not in ("critical", "warning"):
+            if finding["severity"] not in ("critical", "warning") and finding.get("code") not in ("short_lived_review", "unknown_validity"):
                 continue
             action = {
                 "property_id": origin["property_id"],
@@ -732,7 +699,19 @@ def generate_recommendations(origins):
                 "severity": finding["severity"],
                 "evidence": finding["evidence"],
                 "days_remaining": finding.get("days_remaining"),
+                "https_port": origin.get("https_port"),
+                "effective_sni": origin.get("effective_sni"),
+                "trust_description": origin.get("trust_description", ""),
             }
+            for field in ("code", "label", "source", "not_before", "not_after", "validity_days",
+                          "cert_fingerprint", "certificate_subject", "renewal_status",
+                          "collection_note", "is_short_lived"):
+                if field in finding:
+                    action[field] = finding[field]
+            if finding.get("recommendation"):
+                action["recommendation"] = finding["recommendation"]
+                actions.append(action)
+                continue
             trust = origin.get("origin_certs_to_honor", "")
             if "Expired" in finding["finding"] or "expiring" in finding[
                 "finding"
@@ -784,6 +763,9 @@ def generate_recommendations(origins):
                 "rule_path": origin["rule_path"],
                 "origin_hostname": origin.get("resolved_hostname")
                 or origin["origin_hostname"],
+                "https_port": origin.get("https_port"),
+                "effective_sni": origin.get("effective_sni"),
+                "trust_description": origin.get("trust_description", ""),
                 "finding": "Origin unreachable (%s)" % obs,
                 "severity": "warning",
                 "evidence": origin.get(

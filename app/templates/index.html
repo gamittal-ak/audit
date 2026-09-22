@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Reports — Akamai Audit{% endblock %}
 {% block content %}
-<div class="page-heading"><span class="eyebrow">WORKSPACE</span><h1>Account audits</h1><p>Run an audit, investigate findings, and export the complete report.</p></div>
+<div class="page-heading"><h1>Account audits</h1><p>Run an audit, investigate findings, and export the complete report.</p></div>
 <div class="home-grid">
   <section class="surface search-panel" aria-labelledby="account-search-title">
     <div class="surface-header"><div><h2 id="account-search-title" class="mb-0">Run an audit</h2></div><i class="bi bi-search text-muted" aria-hidden="true"></i></div>
@@ -23,4 +23,4 @@
   <div class="dialog-footer"><button class="btn btn-outline-secondary" type="button" id="delete-cancel" onclick="HistoryUI.closeDelete()">Keep reports</button><button class="btn btn-danger" type="button" id="delete-confirm" onclick="HistoryUI.confirmDelete()">Delete reports</button></div>
 </dialog>
 {% endblock %}
-{% block scripts %}<script src="/static/js/history.js?v=20260921-1"></script>{% endblock %}
+{% block scripts %}<script src="/static/js/history.js?v=20260922-1"></script>{% endblock %}

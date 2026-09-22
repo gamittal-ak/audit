@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.services.origin_findings import prepare_origin_report
+
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -77,7 +79,7 @@ _ACTION_HEADERS = [
 
 def generate_excel(json_path: str, xlsx_path: str) -> str:
     with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        data = prepare_origin_report(json.load(f))
 
     wb = Workbook()
     ws = wb.active
@@ -412,6 +414,13 @@ def _build_summary_sheet(wb, data):
         ("Properties with Site Shield", site_shield_count),
         ("", ""),
         ("-- Origin Certificate Summary --", ""),
+        ("Audit collection time (UTC)", data.get("audit_timestamp", "Unknown")),
+        ("Interpretation", "Certificate findings are assessed at collection time."),
+        ("Akamai Network", "Deployment network; does not identify customer QA/production environment."),
+        ("Live certificate observation", "Presented certificate only; chain trust, hostname validation, Akamai delivery and renewal automation were not verified."),
+        ("Short-lived leaf policy", "Lifetime <=31 days: renewal review above 10 days; warning at 8-10 days; critical at <=7 days. Pins and CA certificates are not downgraded."),
+        ("Renewal reviews (rule references)", oc.get("renewal_reviews", 0)),
+        ("Grouped origin findings", data.get("origin_findings_summary", {}).get("total", 0)),
         ("Total Origins Discovered", oc.get("total_origins", 0)),
         ("Origins Probed (TLS)", oc.get("probed", 0)),
         ("Origins HTTP-Only", oc.get("http_only", 0)),
@@ -429,7 +438,7 @@ def _build_summary_sheet(wb, data):
         ("Yellow row", "Standard property data row"),
         ("Red row", "Property row where Edge GB is blank or 0"),
         ("Green row", "Group row with no properties"),
-        ("Orange cert cell", "Certificate expires within 30 days"),
+        ("Orange cert cell", "Edge expiry within 30 days or origin warning; short-lived origin renewal reviews retain neutral formatting"),
         ("Dark red row", "Critical origin certificate action"),
         ("", ""),
         ("-- Products Breakdown --", ""),
@@ -480,8 +489,10 @@ def _build_summary_sheet(wb, data):
                 cell.fill = _cert_warn_fill
                 cell.font = _cert_warn_font
 
+    for row in ws.iter_rows(min_row=2):
+        row[1].alignment = Alignment(vertical="top", wrap_text=True)
     ws.column_dimensions["A"].width = 40
-    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["B"].width = 65
 
 
 # ------------------------------------------------------------------ Origins sheet
@@ -610,25 +621,13 @@ def _build_origin_certs_sheet(wb, data):
 
     _format_origin_sheet(ws, _CERT_HEADERS, "OriginCertsTable")
 
-    # Highlight expiring/expired certificates
-    days_col = _CERT_HEADERS.index("Days Remaining")
-    expired_col = _CERT_HEADERS.index("Expired")
-    for row in ws.iter_rows(min_row=2):
-        days_cell = row[days_col]
-        expired_cell = row[expired_col]
-        if expired_cell.value is True or str(expired_cell.value).lower() == "true":
+    # Match UI interpretation; a short-lived renewal review is not a warning.
+    for row, cert in zip(ws.iter_rows(min_row=2), certs):
+        severity = cert.get("assessment", {}).get("severity", "none")
+        if severity in ("critical", "warning"):
             for cell in row:
-                cell.fill = _critical_fill
-                cell.font = _critical_font
-        elif days_cell.value is not None and days_cell.value != "":
-            try:
-                d = int(days_cell.value)
-                if 0 <= d <= 30:
-                    for cell in row:
-                        cell.fill = _cert_warn_fill
-                        cell.font = _cert_warn_font
-            except (ValueError, TypeError):
-                pass
+                cell.fill = _critical_fill if severity == "critical" else _cert_warn_fill
+                cell.font = _critical_font if severity == "critical" else _cert_warn_font
 
 
 # ------------------------------------------------------------------ Origin Actions sheet
@@ -639,7 +638,7 @@ def _build_origin_actions_sheet(wb, data):
 
     actions = data.get("origin_actions", [])
     if not actions:
-        ws.append(["No origin certificate actions required."] + [""] * (len(_ACTION_HEADERS) - 1))
+        ws.append(["No origin findings reported; check collection coverage."] + [""] * (len(_ACTION_HEADERS) - 1))
         _format_origin_sheet(ws, _ACTION_HEADERS, "OriginActionsTable")
         return
 

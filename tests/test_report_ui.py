@@ -34,6 +34,16 @@ def report_context(legacy=False):
        origin_coverage={} if legacy else dict(total_origins=60,probed=59,http_only=0,unreachable=1,skipped=0,unresolved=0,expired=1,expiring_30d=1,actions_critical=1,actions_warning=1),
        origin_inventory=[] if legacy else origins,origin_certificates=[] if legacy else certs,origin_actions=[] if legacy else actions)
 
+def renewal_context():
+    from test_origin_lifecycle import saved_report
+    from app.services.origin_findings import prepare_origin_report
+    context=report_context()
+    data=prepare_origin_report(saved_report())
+    for key in ("origin_inventory","origin_certificates","origin_coverage","origin_findings_summary","audit_timestamp"):
+        context[key]=data[key]
+    context["origin_actions"]=data["origin_action_groups"]
+    return context
+
 def task_context():
     tasks=[dict(task_id="one",account_name="Example Digital",started_at="2026-09-21 15:40 UTC",cancelled=False,state="SUCCESS",pct=100,step=""),
            dict(task_id="two",account_name="Media Network",started_at="2026-09-21 14:30 UTC",cancelled=False,state="SUCCESS",pct=100,step=""),
@@ -48,7 +58,7 @@ def test_templates_render_legacy_empty_and_new_reports():
         if legacy:
             assert "Origin data was not collected" in result
         else:
-            assert "Origin certificate warnings" in result
+            assert "Origin certificate findings" in result
     ctx=report_context(True); ctx["report"]=[]; ctx["chart_json"]='{"properties":[]}'
     ENV.get_template("partials/report_view.html").render(**ctx)
     for name in ENV.list_templates():
@@ -77,7 +87,7 @@ def preview_server():
                 elif path.startswith("/report/"):
                     body=ENV.get_template("report.html").render(request=None,task_id=path.split("/")[-1]).encode()
                 elif path.startswith("/api/reports/"):
-                    body=ENV.get_template("partials/report_view.html").render(**report_context("legacy" in path)).encode()
+                    body=ENV.get_template("partials/report_view.html").render(**(renewal_context() if "renewal" in path else report_context("legacy" in path))).encode()
                 else:
                     self.send_error(404); return
             self.send_response(200);self.send_header("Content-Type",kind);self.end_headers();self.wfile.write(body)
@@ -119,7 +129,7 @@ def test_report_navigation_search_origins_and_mobile(browser,preview_server):
     page.locator("#propSearch").fill("nothing-matches-here")
     assert page.locator("#noResultsMsg").is_visible()
     page.locator("#noResultsMsg button").click()
-    page.get_by_role("button",name="Origin certificate warnings",exact=False).click()
+    page.get_by_role("button",name="Origin certificate findings",exact=False).click()
     assert page.locator("#origin-actions").is_visible()
     page.locator("#origin-actions .origin-filter").select_option("critical")
     assert page.locator("#origin-actions [data-origin-row]:visible").count()==1
@@ -131,7 +141,7 @@ def test_report_navigation_search_origins_and_mobile(browser,preview_server):
     assert page.locator("#origin-certificates [data-origin-row]:visible").count()==1
     page.locator("#origin-certificates .origin-filter").select_option("")
     page.locator("#origin-certificates").get_by_role("button",name="Sort by Days",exact=True).click()
-    assert page.locator("#origin-certificates tbody tr").first.locator("td").nth(5).inner_text()=="-2"
+    assert page.locator("#origin-certificates tbody tr").first.locator("td").nth(6).inner_text()=="-2"
     page.screenshot(path="/tmp/audit-ui-origins-desktop.png",full_page=True)
     page.locator("#properties-tab").click()
     page.locator(".property-summary").first.click()
@@ -189,5 +199,37 @@ def test_history_selection_refresh_filter_and_delete(browser,preview_server):
     page.set_viewport_size({"width":390,"height":844})
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
     page.screenshot(path="/tmp/audit-ui-home-mobile.png",full_page=True)
+    assert not errors,errors
+    page.close()
+
+def test_grouped_renewal_review_is_neutral_and_references_are_searchable(browser,preview_server):
+    page=browser.new_page(viewport={"width":1440,"height":1000},ignore_https_errors=True)
+    errors=[];page.on("pageerror",lambda error:errors.append(str(error)))
+    page.goto(preview_server+"/report/renewal")
+    page.wait_for_selector('[data-initialized="true"]')
+    banner=page.get_by_role("button",name="Origin certificate findings",exact=False)
+    assert "0 critical" in banner.inner_text() and "1 renewal review" in banner.inner_text()
+    assert "coverage" in banner.get_attribute("class")
+    banner.click()
+    rows=page.locator("#origin-actions [data-origin-row]")
+    assert rows.count()==1 and "table-warning" not in (rows.first.get_attribute("class") or "")
+    assert "Short-lived certificate" in rows.first.inner_text()
+    assert "live_leaf" not in rows.first.locator(".finding-description > strong").inner_text()
+    page.locator("#origin-actions .finding-details summary").click()
+    assert page.locator(".finding-references li:visible").count()==3
+    assert "default > VOD-DR" in rows.first.inner_text()
+    page.locator("#origin-actions .origin-search").fill("VOD-DR")
+    assert page.locator("#origin-actions [data-origin-row]:visible").count()==1
+    page.locator("#origin-actions .origin-filter").select_option("warning")
+    assert page.locator("#origin-actions [data-origin-row]:visible").count()==0
+    page.locator("#origin-actions").get_by_role("button",name="Reset",exact=True).click()
+    page.screenshot(path="/tmp/audit-renewal-findings.png",full_page=True)
+    page.locator("#origin-certificates-tab").click()
+    page.locator("#origin-certificates .origin-filter").select_option("renewal-review")
+    assert page.locator("#origin-certificates [data-origin-row]:visible").count()==3
+    assert page.locator("#origin-certificates tr.table-warning").count()==0
+    assert "does not validate its trust chain" in page.locator("#origins-panel").inner_text()
+    page.set_viewport_size({"width":390,"height":844})
+    page.wait_for_function("document.documentElement.scrollWidth <= innerWidth + 1")
     assert not errors,errors
     page.close()

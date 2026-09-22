@@ -20,6 +20,7 @@ from app.services.cache_service import get_or_fetch_rule_tree
 from app.services.dns_service import get_network_details
 from app.services.edgegrid_auth import auth_from_edgerc
 from app.services.excel_service import generate_excel
+from app.services.origin_findings import prepare_origin_report
 from app.services.origin_cert_service import (
     extract_origins_from_rule_tree,
     probe_origin_certificate,
@@ -402,6 +403,8 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
                     }
                     group_report["properties"].append(clean)
             final_report["report"].append(group_report)
+
+        final_report = prepare_origin_report(final_report)
 
         # ---- Step 6: write JSON --------------------------------------------
         _progress(task, "Writing JSON report", 90)
