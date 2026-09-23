@@ -1,6 +1,6 @@
 """
 Async Akamai API client.
-All methods gate on a shared asyncio.Semaphore to avoid rate-limit errors.
+All outgoing requests use Redis-coordinated pacing and shared cooldowns.
 """
 import asyncio
 import logging
@@ -14,6 +14,12 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
 import httpx
+import redis.asyncio as aioredis
+
+from app.config import get_settings
+from app.services.rate_limit import (
+    AkamaiRateLimiter, api_scope, is_waf_rate_block, quota_delay, retry_after_delay,
+)
 
 from app.services.edgegrid_auth import EdgeGridAuth
 
@@ -40,42 +46,73 @@ class AkamaiClient:
         self.auth = auth
         self.sem = sem
         self.timeout = timeout
+        self.settings = get_settings()
+        self._rate_redis = None
+        self._limiter = None
         self._client: Optional[httpx.AsyncClient] = None
 
     async def __aenter__(self):
+        self._rate_redis = aioredis.from_url(self.settings.redis_url)
+        self._limiter = AkamaiRateLimiter(self._rate_redis, self.settings)
         self._client = httpx.AsyncClient(
             auth=self.auth,
             timeout=self.timeout,
-            follow_redirects=True,
+            follow_redirects=False,  # Every outgoing request must pass the limiter.
         )
         return self
 
     async def __aexit__(self, *args):
-        if self._client:
-            await self._client.aclose()
+        try:
+            if self._client:
+                await self._client.aclose()
+        finally:
+            if self._rate_redis:
+                await self._rate_redis.aclose()
 
     # ------------------------------------------------------------------ helpers
 
     def _url(self, path: str) -> str:
         return urljoin(self.base_url, path)
 
-    async def _get(self, path: str, params: dict = None) -> dict:
-        async with self.sem:
-            resp = await self._client.get(
-                self._url(path), params=params, headers=_PAPI_HEADERS
-            )
-            resp.raise_for_status()
-            return resp.json()
+    async def _request(self, method, path, params=None, json_body=None, max_attempts=None):
+        scope = api_scope(path)
+        attempts = max_attempts or self.settings.akamai_max_attempts
+        for attempt in range(1, attempts + 1):
+            async with self.sem:
+                await self._limiter.acquire(scope)
+                resp = await self._client.request(
+                    method, self._url(path), params=params, json=json_body,
+                    headers=_PAPI_HEADERS if scope == 'papi' else _REPORT_HEADERS,
+                )
+                await self._limiter.observe(scope, resp)
+                waf_block = is_waf_rate_block(resp)
+                retryable = waf_block or resp.status_code in (429, 500, 502, 503, 504)
+                if not retryable:
+                    return resp
+                delay = _retry_delay(resp, attempt)
+                if waf_block:
+                    delay = max(delay, self.settings.akamai_waf_cooldown_seconds)
+                elif resp.status_code == 429:
+                    delay = max(delay, quota_delay(resp.headers, exhausted=True), 60.0)
+                # Pause all credentials/API families for a source-IP WAF block.
+                await self._limiter.defer('global' if waf_block else scope, delay)
+                logger.warning(
+                    'Akamai %s %s: HTTP %s%s; shared cooldown %.1fs (attempt %d/%d)',
+                    scope, method, resp.status_code, ' IPBLOCK-BURST' if waf_block else '',
+                    delay, attempt, attempts,
+                )
+            if attempt == attempts:
+                return resp
+            # acquire() enforces the shared cooldown on the next attempt.
 
-    async def _post(self, path: str, params: dict = None, json_body: dict = None) -> httpx.Response:
-        async with self.sem:
-            return await self._client.post(
-                self._url(path),
-                params=params,
-                json=json_body,
-                headers=_REPORT_HEADERS,
-                timeout=60.0,
-            )
+    async def _get(self, path: str, params: dict = None) -> dict:
+        resp = await self._request('GET', path, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _post(self, path: str, params: dict = None, json_body: dict = None,
+                    max_attempts: int = None) -> httpx.Response:
+        return await self._request('POST', path, params, json_body, max_attempts)
 
     # ------------------------------------------------------------------ PAPI
 
@@ -224,6 +261,8 @@ class AkamaiClient:
 
             for cpc in chunk_resp.get("unauthorized_cpcodes", []):
                 cpcode_statuses[str(cpc)] = "forbidden"
+            if chunk_resp.get("unauthorized_cpcodes"):
+                failed_statuses.append("forbidden")
 
             if status not in ("ok", "no_cpcodes"):
                 failed_statuses.append(status)
@@ -266,13 +305,18 @@ class AkamaiClient:
         pending = list(cpcodes)
         unauthorized: set = set()
 
-        attempt = 1
-        while attempt <= max_retries:
+        # Each permission retry removes at least one ID; transient retries are
+        # bounded separately in _request and all attempts are rate limited.
+        while pending:
             resp = await self._post(
                 "/reporting-api/v2/reports/delivery/traffic/current/data",
                 params={"accountSwitchKey": switch_key, "start": start, "end": end},
                 json_body=_traffic_body(pending),
+                max_attempts=max_retries,
             )
+
+            if is_waf_rate_block(resp):
+                return {"data": [], "status": "rate_limited", "failed_cpcodes": cpcodes}
 
             if resp.status_code == 403:
                 resp_text = resp.text[:2000]
@@ -319,36 +363,7 @@ class AkamaiClient:
                 }
 
             if resp.status_code == 429:
-                if attempt < max_retries:
-                    wait = _retry_delay(resp, attempt)
-                    logger.warning(
-                        "Reporting API 429 rate limit for switch_key=%s (attempt %d/%d) — retrying in %.1fs",
-                        switch_key, attempt, max_retries, wait,
-                    )
-                    await asyncio.sleep(wait)
-                    attempt += 1
-                    continue
-                logger.warning(
-                    "Reporting API 429 rate limit for switch_key=%s — exhausted %d retries, skipping.",
-                    switch_key, max_retries,
-                )
                 return {"data": [], "status": "rate_limited", "failed_cpcodes": cpcodes}
-
-            if resp.status_code in (500, 502, 503, 504):
-                if attempt < max_retries:
-                    wait = _retry_delay(resp, attempt)
-                    logger.warning(
-                        "Reporting API %s for switch_key=%s (attempt %d/%d) — retrying in %.1fs",
-                        resp.status_code, switch_key, attempt, max_retries, wait,
-                    )
-                    await asyncio.sleep(wait)
-                    attempt += 1
-                    continue
-                logger.warning(
-                    "Reporting API %s for switch_key=%s — exhausted %d retries. Response: %s",
-                    resp.status_code, switch_key, max_retries, resp.text[:500],
-                )
-                return {"data": [], "status": "api_error", "failed_cpcodes": cpcodes}
 
             if resp.status_code != 200:
                 logger.warning(
@@ -427,20 +442,8 @@ def _extract_unauthorized_cpcodes(resp: httpx.Response) -> Optional[set]:
 
 
 def _retry_delay(resp: httpx.Response, attempt: int) -> float:
-    retry_after = resp.headers.get("Retry-After")
-    if retry_after:
-        try:
-            return max(float(retry_after), 0.0)
-        except ValueError:
-            try:
-                from email.utils import parsedate_to_datetime
-                retry_at = parsedate_to_datetime(retry_after)
-                if retry_at.tzinfo is None:
-                    retry_at = retry_at.replace(tzinfo=timezone.utc)
-                return max((retry_at - datetime.now(timezone.utc)).total_seconds(), 0.0)
-            except (TypeError, ValueError):
-                pass
-    return (2 ** attempt) + (attempt * 0.5)
+    delay = retry_after_delay(resp.headers)
+    return max(delay or 0.0, (2 ** attempt) + (attempt * 0.5))
 
 
 def _utc_midnight(dt: datetime) -> str:

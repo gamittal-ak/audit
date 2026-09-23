@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pydantic_settings import BaseSettings
+from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -11,11 +12,17 @@ class Settings(BaseSettings):
     edgerc_section: str = "default"
     edgerc_reporting_section: str = "reporting"
     reports_base_dir: str = "./reports"
-    concurrency_limit: int = 10
+    concurrency_limit: int = Field(default=10, ge=1)
+    # Shared deployment budgets, below Akamai's documented sustained limits.
+    papi_requests_per_minute: float = Field(default=80, gt=0, le=80)
+    reporting_requests_per_minute: float = Field(default=15, gt=0, le=15)
+    akamai_global_requests_per_second: float = Field(default=2, gt=0, le=2)
+    akamai_max_attempts: int = Field(default=6, ge=1, le=10)
+    akamai_waf_cooldown_seconds: float = Field(default=610, ge=610)
     rule_tree_cache_ttl: int = 3600
     traffic_chunk_size: int = 100
     traffic_chunk_delay_seconds: float = 0.25
-    traffic_max_retries: int = 6
+    traffic_max_retries: int = Field(default=6, ge=1, le=10)
 
     class Config:
         env_file = ".env"

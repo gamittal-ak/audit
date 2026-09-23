@@ -439,7 +439,7 @@ def test_parse_configured_cert_empty():
 
 def test_probe_live_certificate():
     """Probe a known public HTTPS endpoint to verify the probe machinery works."""
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         probe_origin_certificate("www.akamai.com", 443, timeout=15.0)
     )
     assert result["status"] == "ok", f"Probe failed: {result}"
@@ -453,7 +453,7 @@ def test_probe_live_certificate():
 
 
 def test_probe_blocked_destination():
-    result = asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         probe_origin_certificate("127.0.0.1", 443)
     )
     assert result["status"] == "skipped"

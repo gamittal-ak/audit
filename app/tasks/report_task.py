@@ -475,6 +475,11 @@ async def _process_property(
             ),
             return_exceptions=True,
         )
+        # Preserve the original API failure instead of passing it into rule analysis.
+        if isinstance(rule_tree, Exception):
+            raise rule_tree
+        if not isinstance(rule_tree, dict):
+            raise ValueError(f"Invalid rule tree for property {property_id}: expected an object")
         if isinstance(hostnames_result, Exception):
             logger.warning(
                 "get_hostnames failed for property %s: %s",
