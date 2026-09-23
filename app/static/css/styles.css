@@ -126,3 +126,17 @@ h1,h2,h3,h4,h5,h6{color:var(--ink);letter-spacing:-.025em}h1{font-size:24px;font
 #spinner.htmx-indicator:not(.htmx-request){display:none}
 @media(max-width:1100px){.metric{display:block}}
 @media(max-width:800px){.form-control,.form-select{min-height:36px}.origin-nav .nav-link{min-height:36px}.btn{min-height:32px}.origin-stats{padding:5px 0}}
+
+/* Live audit activity, with a bounded, keyboard-scrollable terminal. */
+.progress-panel{max-width:960px;margin:24px auto;padding:28px}
+.audit-terminal{margin:24px 0 16px;border:1px solid #263449;border-radius:9px;overflow:hidden;background:#101a2b;color:#d9e4f5;min-width:0}
+.audit-terminal-header,.audit-terminal-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;background:#162236}
+.audit-terminal-header h2{color:#e3edfc;font-size:12px;letter-spacing:0;margin:0;display:flex;align-items:center;gap:8px}
+.audit-log-follow{background:#233650;border:1px solid #48617f;border-radius:5px;color:#dbeaff;font-size:11px;padding:4px 8px;white-space:nowrap}
+.audit-log-follow:hover{background:#304866}.audit-log-follow:focus-visible,.audit-log-output:focus-visible{outline:2px solid #8ab9ff;outline-offset:-2px}
+.audit-log-output{position:relative;height:320px;overflow:auto;padding:12px 14px;overscroll-behavior:contain;font:12px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;scrollbar-color:#42546e #101a2b}
+.audit-log-line{display:grid;grid-template-columns:64px 58px minmax(0,1fr);gap:10px;padding:2px 0;align-items:baseline}
+.audit-log-line time{color:#91a4c0;font-size:11px}.audit-log-level{color:#8eb9fc;font-size:10px}.audit-log-message{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}
+.audit-log-warning .audit-log-level{color:#f5c66f}.audit-log-error .audit-log-level{color:#ff9696}.audit-log-success .audit-log-level{color:#82dbb2}
+.audit-log-empty{color:#a7b7ce;margin:0}.audit-terminal-footer{color:#a7b7ce;font-size:10px;padding:8px 14px;border-top:1px solid #263449;flex-wrap:wrap}
+@media(max-width:600px){.progress-panel{padding:18px;margin:16px auto}.progress-panel h1{font-size:21px}.audit-log-output{height:300px;padding:10px;font-size:11px}.audit-log-line{grid-template-columns:57px 48px minmax(0,1fr);gap:6px}.audit-log-line time{font-size:10px}.audit-terminal-header,.audit-terminal-footer{padding-inline:10px}}

@@ -1,0 +1,14 @@
+<section class="audit-terminal" aria-labelledby="audit-log-title" data-audit-terminal data-task-id="{{ task_id }}">
+  <div class="audit-terminal-header">
+    <h2 id="audit-log-title"><i class="bi bi-terminal" aria-hidden="true"></i> Audit activity</h2>
+    <button id="audit-log-follow" type="button" class="audit-log-follow" aria-pressed="true" aria-controls="audit-log-output">Auto-scroll on</button>
+  </div>
+  <div id="audit-log-output" class="audit-log-output" role="log" aria-label="Audit activity, times in UTC" aria-live="off" tabindex="0">
+    {% for entry in activity %}
+    <div class="audit-log-line audit-log-{{ entry.level }}" data-log-id="{{ entry.id }}"><time>{{ entry.time }}</time><span class="audit-log-level">{{ entry.level|upper }}</span><span class="audit-log-message">{{ entry.message }}</span></div>
+    {% else %}
+    <p class="audit-log-empty">{% if logs_available %}Waiting for activity. New entries appear as the audit advances.{% else %}Activity is temporarily unavailable. Retrying automatically.{% endif %}</p>
+    {% endfor %}
+  </div>
+  <div class="audit-terminal-footer"><span>Latest {{ log_limit }} entries &middot; UTC</span><span>{% if error %}Audit stopped{% else %}Updates every 2 seconds{% endif %}</span></div>
+</section>

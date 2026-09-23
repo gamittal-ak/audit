@@ -233,3 +233,57 @@ def test_grouped_renewal_review_is_neutral_and_references_are_searchable(browser
     page.wait_for_function("document.documentElement.scrollWidth <= innerWidth + 1")
     assert not errors,errors
     page.close()
+
+
+def test_live_activity_polling_scroll_retention_and_mobile(browser, preview_server):
+    page = browser.new_page(viewport={"width":1440,"height":1000}, ignore_https_errors=True)
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    state = {"start":0,"end":90,"done":False}
+    def activity_response(route):
+        if state["done"]:
+            body = ENV.get_template("partials/report_view.html").render(**report_context())
+        else:
+            body = ENV.get_template("partials/progress.html").render(
+                request=None,task_id="live",pct=42,step="Analysing properties",
+                logs_available=True,log_limit=300,
+                activity=[dict(id=str(i),time="12:34:56",level="warning" if i%10==0 else "info",
+                message=f"Property {i}: checking configuration and certificates" + (" - waiting for shared API budget" if i%10==0 else "")) for i in range(state["start"],state["end"])])
+        route.fulfill(status=200,content_type="text/html",body=body)
+    page.route("**/api/reports/live/status", activity_response)
+    page.goto(preview_server + "/report/live")
+    page.wait_for_selector('#audit-log-output[data-initialized="true"]')
+    log = page.locator("#audit-log-output")
+    assert log.evaluate("el => el.scrollHeight - el.clientHeight - el.scrollTop") < 2
+    # A real HTMX status refresh adds a new entry and continues following it.
+    state["end"] = 91
+    page.wait_for_selector('[data-log-id="90"]')
+    assert log.evaluate("el => el.scrollHeight - el.clientHeight - el.scrollTop") < 2
+    page.screenshot(path="/tmp/audit-ui-live-logs-desktop.png", full_page=True)
+    # Reading older lines must survive a poll, including removal of older entries.
+    log.evaluate("el => el.scrollTop = 700")
+    page.wait_for_function("document.getElementById('audit-log-follow').getAttribute('aria-pressed') === 'false'")
+    anchor = log.evaluate("el => {const l=Array.from(el.children).find(x=>x.offsetTop-el.offsetTop+x.offsetHeight>el.scrollTop); return {id:l.dataset.logId,offset:l.offsetTop-el.offsetTop-el.scrollTop}}")
+    state["start"] = 5
+    state["end"] = 92
+    page.wait_for_selector('[data-log-id="91"]')
+    offset = page.locator('[data-log-id="'+anchor["id"]+'"]').evaluate("el=>el.offsetTop-document.getElementById('audit-log-output').offsetTop-document.getElementById('audit-log-output').scrollTop")
+    assert abs(offset-anchor["offset"]) < 2
+    assert page.locator("#audit-log-follow").get_attribute("aria-pressed") == "false"
+    page.get_by_role("button", name="Follow latest").click()
+    assert log.evaluate("el => el.scrollHeight - el.clientHeight - el.scrollTop") < 2
+    # Pausing explicitly also survives refresh without disturbing button focus.
+    page.get_by_role("button", name="Auto-scroll on").click()
+    state["end"] = 93
+    page.wait_for_selector('[data-log-id="92"]')
+    assert page.locator("#audit-log-follow").get_attribute("aria-pressed") == "false"
+    assert page.evaluate("document.activeElement.id") == "audit-log-follow"
+    page.set_viewport_size({"width":390,"height":844})
+    page.screenshot(path="/tmp/audit-ui-live-logs-mobile.png", full_page=True)
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+    state["done"] = True
+    page.wait_for_selector("#properties-panel")
+    assert page.locator("#audit-log-output").count() == 0
+    assert not page.locator("#report-content").get_attribute("hx-trigger")
+    assert not errors, errors
+    page.close()

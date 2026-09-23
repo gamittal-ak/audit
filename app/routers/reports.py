@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.auth import require_auth
 from app.services.origin_findings import prepare_origin_report
+from app.services.audit_log import log_key, read_activity, MAX_ENTRIES
 from app.config import get_settings
 from app.tasks.celery_app import celery_app
 from app.tasks.report_task import run_report
@@ -194,6 +195,7 @@ async def _delete_tasks(task_ids: list[str]) -> dict:
                 async with r.pipeline(transaction=True) as pipe:
                     pipe.zrem("recent_tasks", task_id)
                     pipe.delete(f"task:{task_id}")
+                    pipe.delete(log_key(task_id))
                     await pipe.execute()
                 deleted.append(task_id)
             except Exception:
@@ -281,6 +283,8 @@ def _delete_report_files(task_id: str, meta: dict | None = None):
 
 @router.get("/api/reports/{task_id}/status", response_class=HTMLResponse)
 async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
+    if not request.session.get("authenticated"):
+        return HTMLResponse(status_code=401, headers={"HX-Redirect": "/login"})
     try:
         result = celery_app.AsyncResult(task_id)
         state = result.state
@@ -356,6 +360,19 @@ async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
             },
         )
 
+    activity = []
+    logs_available = True
+    try:
+        r = await _redis()
+        try:
+            activity = await read_activity(r, task_id)
+        finally:
+            await r.aclose()
+    except Exception:
+        logs_available = False
+        logger.warning("Could not retrieve activity for task %s", task_id)
+    activity_context = {"activity": activity, "logs_available": logs_available, "log_limit": MAX_ENTRIES, "task_id": task_id}
+
     if state in ("FAILURE", "REVOKED"):
         if state == "REVOKED":
             error = "Report was cancelled."
@@ -363,7 +380,7 @@ async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
             error = str(info.get("exc_message", "")) or str(result.info)
         return templates.TemplateResponse(
             "partials/error.html",
-            {"request": request, "error": error},
+            {"request": request, "error": error, **activity_context},
         )
 
     pct = info.get("pct", 0) if info else 0
@@ -375,5 +392,6 @@ async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
             "task_id": task_id,
             "pct": pct,
             "step": step,
+            **activity_context,
         },
     )

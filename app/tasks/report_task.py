@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 from app.config import get_settings
 from app.services.akamai_client import AkamaiClient, get_cert_details_sync
+from app.services.audit_log import audit_activity, event
 from app.services.cache_service import get_or_fetch_rule_tree
 from app.services.dns_service import get_network_details
 from app.services.edgegrid_auth import auth_from_edgerc
@@ -44,7 +45,15 @@ from app.tasks.celery_app import celery_app
 @celery_app.task(bind=True, name="tasks.run_report")
 def run_report(self, switch_key: str, account_name: str, traffic_days: int = 15) -> dict:
     """Entry point called by FastAPI. Bridges sync Celery -> async pipeline."""
-    return asyncio.run(_async_run_report(self, switch_key, account_name, traffic_days))
+    with audit_activity(self.request.id):
+        event("Audit started. Collecting account configuration and traffic.")
+        try:
+            result = asyncio.run(_async_run_report(self, switch_key, account_name, traffic_days))
+        except Exception:
+            event("Audit failed. Check the error shown above for details.", "error")
+            raise
+        event("Audit complete. JSON and Excel reports are ready.", "success")
+        return result
 
 
 # ------------------------------------------------------------------ async pipeline
@@ -91,12 +100,18 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
         _progress(task, f"Fetching properties for {len(groups)} groups", 15)
 
         # Build all (group, contractId) pairs and deduplicate properties
+        async def fetch_properties(group, contract_id):
+            result = await client.get_properties(switch_key, contract_id, group["groupId"])
+            count = len(result.get("properties", {}).get("items", []))
+            event(f"Found {count} properties in group {group.get('groupName', group['groupId'])}.")
+            return result
+
         fetch_tasks = []
         fetch_keys = []
         for g in groups:
             for cid in g.get("contractIds", []):
                 fetch_tasks.append(
-                    client.get_properties(switch_key, cid, g["groupId"])
+                    fetch_properties(g, cid)
                 )
                 fetch_keys.append((g, cid))
 
@@ -109,6 +124,7 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
 
         for (g, cid), result in zip(fetch_keys, prop_results):
             if isinstance(result, Exception):
+                event(f"Could not fetch properties for group {g['groupId']}; continuing with other groups.", "warning")
                 logger.warning(
                     "get_properties failed for group %s contract %s: %s",
                     g["groupId"], cid, result,
@@ -134,15 +150,24 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
 
         # ---- Step 3: analyse every property --------------------------------
         _progress(task, f"Analysing {total_props} properties", 20)
+        completed_props = 0
+
+        async def process_property(group, contract_id, prop):
+            nonlocal completed_props
+            result = await _process_property(task, client, redis, switch_key, group, contract_id, prop, settings, probe_sem)
+            completed_props += 1
+            step = f"Analysed {completed_props}/{total_props} properties"
+            _progress(task, step, 20 + int(45 * completed_props / max(total_props, 1)), record=False)
+            name = prop.get("propertyName") or prop["propertyId"]
+            event(f"{step}: {name}" + ("" if result else " (could not collect this property)"), "info" if result else "warning")
+            return result
+
         prop_tasks = []
         prop_meta = []
         for g, cid, props in group_prop_pairs:
             for prop in props:
                 prop_tasks.append(
-                    _process_property(
-                        task, client, redis, switch_key, g, cid, prop,
-                        settings, probe_sem,
-                    )
+                    process_property(g, cid, prop)
                 )
                 prop_meta.append((g, cid, prop))
 
@@ -246,17 +271,26 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
                 probe_targets[key] = {"hostname": hostname, "port": port, "sni": sni}
 
         # Probe all unique origin endpoints
+        completed_probes = 0
+
+        async def probe_target(target):
+            nonlocal completed_probes
+            try:
+                result = await probe_origin_certificate(target["hostname"], target["port"], target["sni"], timeout=10.0, semaphore=probe_sem)
+            except Exception:
+                event(f"Origin certificate probe failed: {target['hostname']}:{target['port']}", "warning")
+                raise
+            finally:
+                completed_probes += 1
+            status = result.get("status", "unknown")
+            event(f"Origin {completed_probes}/{len(probe_targets)}: {target['hostname']}:{target['port']} ({status})", "info" if status == "ok" else "warning")
+            return result
+
         probe_tasks = []
         probe_keys = []
         for key, target in probe_targets.items():
             probe_tasks.append(
-                probe_origin_certificate(
-                    target["hostname"],
-                    target["port"],
-                    target["sni"],
-                    timeout=10.0,
-                    semaphore=probe_sem,
-                )
+                probe_target(target)
             )
             probe_keys.append(key)
 
@@ -481,6 +515,7 @@ async def _process_property(
         if not isinstance(rule_tree, dict):
             raise ValueError(f"Invalid rule tree for property {property_id}: expected an object")
         if isinstance(hostnames_result, Exception):
+            event(f"Hostnames unavailable for property {property_id}; continuing with available data.", "warning")
             logger.warning(
                 "get_hostnames failed for property %s: %s",
                 property_id, hostnames_result,
@@ -643,6 +678,7 @@ async def _process_property(
                     (staging_version, "STAGING", stg_tree)
                 )
             except Exception as e:
+                event(f"Staging rules unavailable for property {property_id}.", "warning")
                 logger.warning(
                     "Failed to fetch staging tree for %s v%s: %s",
                     property_id, staging_version, e,
@@ -674,6 +710,7 @@ async def _process_property(
                     (latest_version, "LATEST_DRAFT", draft_tree)
                 )
             except Exception as e:
+                event(f"Draft rules unavailable for property {property_id}.", "warning")
                 logger.warning(
                     "Failed to fetch draft tree for %s v%s: %s",
                     property_id, latest_version, e,
@@ -735,6 +772,8 @@ async def _process_property(
 
 # ------------------------------------------------------------------ helpers
 
-def _progress(task, step: str, pct: int):
+def _progress(task, step: str, pct: int, record: bool = True):
+    if record:
+        event(step)
     task.update_state(state="PROGRESS", meta={"step": step, "pct": pct})
     print(f"[{pct}%] {step}")

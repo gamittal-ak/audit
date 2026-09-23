@@ -17,6 +17,7 @@ import httpx
 import redis.asyncio as aioredis
 
 from app.config import get_settings
+from app.services.audit_log import event
 from app.services.rate_limit import (
     AkamaiRateLimiter, api_scope, is_waf_rate_block, quota_delay, retry_after_delay,
 )
@@ -96,6 +97,11 @@ class AkamaiClient:
                     delay = max(delay, quota_delay(resp.headers, exhausted=True), 60.0)
                 # Pause all credentials/API families for a source-IP WAF block.
                 await self._limiter.defer('global' if waf_block else scope, delay)
+                event(
+                    f"Akamai {scope}: HTTP {resp.status_code}. "
+                    + (f"Retry {attempt}/{attempts} after a shared cooldown of at least {delay:.0f}s." if attempt < attempts else "Retry limit reached; this request could not complete."),
+                    "warning",
+                )
                 logger.warning(
                     'Akamai %s %s: HTTP %s%s; shared cooldown %.1fs (attempt %d/%d)',
                     scope, method, resp.status_code, ' IPBLOCK-BURST' if waf_block else '',
@@ -252,11 +258,13 @@ class AkamaiClient:
             if idx > 1 and chunk_delay_seconds > 0:
                 await asyncio.sleep(chunk_delay_seconds)
 
+            event(f"Fetching traffic batch {idx}/{len(chunks)} ({len(chunk)} CP codes).")
             chunk_resp = await self._get_traffic_chunk(
                 switch_key, chunk, start, end, _max_retries
             )
             status = chunk_resp.get("status", "api_error")
             rows = chunk_resp.get("data", [])
+            event(f"Traffic batch {idx}/{len(chunks)}: {len(rows)} rows, status {status}.", "info" if status == "ok" else "warning")
             data_rows.extend(rows)
 
             for cpc in chunk_resp.get("unauthorized_cpcodes", []):
@@ -289,6 +297,7 @@ class AkamaiClient:
             "Reporting API traffic complete: status=%s, %d rows for %d cpcodes (%d cpcodes marked)",
             overall_status, len(data_rows), len(cpcodes), len(cpcode_statuses),
         )
+        event(f"Traffic collection complete: {len(data_rows)} rows; {len(cpcode_statuses)} CP codes unavailable.", "info" if overall_status == "ok" else "warning")
         result = {"data": data_rows, "status": overall_status}
         if cpcode_statuses:
             result["cpcode_statuses"] = cpcode_statuses
@@ -326,6 +335,7 @@ class AkamaiClient:
                     if bad_ids:
                         unauthorized.update(bad_ids)
                         pending = [c for c in pending if c not in bad_ids]
+                        event(f"Traffic access denied for {len(bad_ids)} CP codes; continuing with {len(pending)} permitted candidates.", "warning")
                         logger.warning(
                             "Reporting API 403: %d unauthorized cpcodes removed (%s) for switch_key=%s — retrying with %d remaining",
                             len(bad_ids), sorted(bad_ids), switch_key, len(pending),

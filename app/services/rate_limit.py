@@ -7,6 +7,9 @@ Redis is required; an unavailable limiter never falls back to unpaced requests.
 import asyncio
 import logging
 import math
+import time
+
+from app.services.audit_log import event
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
@@ -123,6 +126,7 @@ class AkamaiRateLimiter:
             'identity': 2000,
         }
         self._seen_headers = set()
+        self._last_wait_notice = {}
 
     async def acquire(self, scope):
         while True:
@@ -132,6 +136,10 @@ class AkamaiRateLimiter:
             )
             if wait_ms <= 0:
                 return
+            now = time.monotonic()
+            if wait_ms >= 5000 and now - self._last_wait_notice.get(scope, float("-inf")) >= 30:
+                self._last_wait_notice[scope] = now
+                event(f"Waiting for the shared {scope} API budget: at least {math.ceil(wait_ms / 1000)}s remaining.", "warning")
             # Recheck shared state after waking; another process may extend a cooldown.
             await asyncio.sleep(min(wait_ms / 1000, 30.0))
 

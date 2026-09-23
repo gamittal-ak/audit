@@ -22,3 +22,9 @@ the UI.
 Compact layout review: checked desktop widths 1024-1920, tablet 800, and mobile
 390 pixels, plus sticky report controls. The synthetic origin table starts at
 487px instead of 749px at a 1440px viewport.
+
+Live activity checks cover task isolation, bounded storage and expiry, activity
+store outages, task outcomes, authenticated polling, HTML escaping, report cleanup,
+retry summaries, and a synthetic pipeline. Set TEST_REDIS_URL for Redis integration
+checks. Browser checks verify auto-scroll, scroll anchoring as old entries are
+trimmed, keyboard focus, mobile overflow and transition to the finished report.
