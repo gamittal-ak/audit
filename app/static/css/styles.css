@@ -248,3 +248,48 @@ body{font-size:14px}
 
 .chart-container{min-width:0;overflow:hidden}.chart-container canvas{max-width:100%}
 @media(max-width:600px){.task-item{display:grid;grid-template-columns:16px minmax(0,1fr) 60px 22px 26px;gap:8px}.task-cb{grid-column:1}.task-link{grid-column:2}.task-status{grid-column:3;margin:0}.history-export{grid-column:4;padding:2px}.row-delete{grid-column:5;padding:3px}.task-item>.btn{grid-column:4 / 6;justify-self:end;font-size:11px}}
+
+/* Compact density: same content and controls, less padding and smaller headings. */
+body{font-size:13px;line-height:1.45}
+.app-nav{min-height:46px;padding-block:4px}.app-brand{font-size:17px}.brand-mark{width:26px;height:26px;border-radius:8px;font-size:18px}
+.app-main{padding:12px 20px 28px}
+.home-heading{margin:0 0 12px}.home-heading h1{font-size:20px;margin:2px 0 2px}.home-heading p{font-size:12px}
+.home-grid{gap:12px}
+.search-panel .surface-header{padding:14px 18px}.search-panel .surface-header h2{font-size:16px;margin:2px 0 4px}.search-panel .surface-header p{font-size:12px;margin:0}
+.search-panel .surface-body{padding:14px 18px}.search-panel .form-control{min-height:36px;font-size:13px}
+.search-help{margin-top:6px}.audit-includes{margin-top:8px;gap:6px 14px}
+.account-result{padding:8px 0}
+.history-panel .surface-header{padding:12px 18px 6px}.history-panel .surface-header h2{font-size:16px;margin:0}
+.history-overview{padding:0 18px 4px;gap:16px}.history-overview button{padding:2px 0}.history-overview strong{font-size:15px}
+.history-toolbar{padding:6px 18px 10px}
+.history-selection{padding:5px 18px;min-height:32px}
+.task-item{padding:7px 18px;gap:12px;min-height:0}.task-name{font-size:13px}.task-meta{font-size:11px;margin-top:1px}
+.history-export{padding:4px}
+.empty-state{padding:16px}
+.report-breadcrumb{margin-bottom:4px}
+.report-heading{margin-bottom:10px}.report-heading h1{font-size:22px;margin-bottom:2px}
+.metric-strip{padding:7px 0;margin-bottom:8px}.metric-value{font-size:17px}
+.warning-strip{gap:8px;margin-bottom:10px}.warning-link{padding:6px 10px}
+.report-sections{min-height:40px;gap:22px}.section-link{padding:10px 0;font-size:12px}
+.report-panel{padding-top:12px;scroll-margin-top:48px}
+#origins-panel,#traffic-panel{margin-top:18px;padding-top:14px}
+.config-intro{margin-bottom:8px}.config-intro h2{font-size:16px;margin:0 0 2px}
+.tls-filters{gap:6px}.tls-filter{padding:5px 10px;gap:10px}.tls-filter strong{font-size:15px}
+.tls-help{margin:6px 0}
+.report-toolbar{top:40px;padding:5px 0}
+.result-count{margin-bottom:4px}
+.config-columns{padding:7px 14px}
+.property-summary{padding:7px 14px;min-height:0}
+.accordion-item{margin-bottom:8px!important}.accordion-button{padding:7px 14px}
+.property-body{padding:12px 14px 14px}
+.property-expanded-meta{padding-bottom:6px;margin-bottom:8px}
+.edge-detail{padding:10px 0;margin:2px 0 12px}.edge-network-heading{margin:10px 0 6px}
+.property-data-section{margin-top:12px}.property-data-section h4{margin-bottom:6px}
+.table th{padding:5px 8px}.table td{padding:4px 8px;line-height:1.4}
+.origin-stats{padding:5px 0;margin-bottom:6px}.origin-stat strong{font-size:15px}
+.origin-jumps{margin:8px 0}
+.origin-panel{margin:14px 0 18px;scroll-margin-top:50px}
+.origin-toolbar{margin:6px 0 4px}
+.chart-container{height:260px;padding:12px}
+@media(max-width:900px){.property-summary{padding:10px 14px}.property-open-label{top:10px}}
+@media(max-width:600px){.task-item{padding:9px 14px}.history-panel .surface-header{padding:12px 16px 6px}.history-overview,.history-toolbar{padding-inline:16px}}
