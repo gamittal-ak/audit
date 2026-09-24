@@ -19,14 +19,31 @@ before properties are analysed.
 ## Rules
 
 - A hostname suffix never decides the TLS network; legacy sTLS can use `edgekey.net`.
-- Akamai shared certificate: property hostname equals the edge hostname and has
-  exactly one label before `.akamaized.net`.
+- Akamai shared certificate: PAPI hostname `cnameType` is `SHARED_CERT`
+  (Property Manager shows "Shared"). The hostname pattern alone never decides it.
 - A TLS network is not proof of a deployed certificate.
-- HTTP-only (client to edge) requires all of: a complete accessible CPS inventory,
-  a custom hostname on sTLS, `CPS_MANAGED` provisioning, and no matching deployed
-  certificate or pending enrollment on any network. Default DV, shared, eTLS,
-  wildcard or Akamai-domain hostnames, ambiguous matches and partial inventories
-  are never classified HTTP-only.
+- HTTP-only (client to edge) comes from one of two sources:
+  - **Property Manager configuration:** a single-label `*.akamaized.net` property
+    hostname equal to its edge hostname, `CPS_MANAGED`, with a reported `cnameType`
+    other than `SHARED_CERT` (`CUSTOM` or `EDGE_HOSTNAME`). Property Manager shows
+    these as "No certificate (HTTP Only)"; the report labels the certificate type
+    "No certificate". Clients that still use HTTPS receive Akamai's
+    `*.akamaized.net` wildcard from the edge, so this describes configuration, not
+    whether a TLS handshake succeeds.
+  - **CPS inventory:** a complete accessible CPS inventory, a custom hostname on
+    sTLS, `CPS_MANAGED` provisioning, and no matching deployed certificate or
+    pending enrollment on any network.
+  Default DV, shared, eTLS, wildcard or other Akamai-domain hostnames, ambiguous
+  matches, partial inventories and hostnames whose `cnameType` was not reported are
+  never classified HTTP-only.
+- `cnameType=EDGE_HOSTNAME` alone means nothing about certificates; most hostnames
+  with real CPS or Default DV certificates also report it.
+- Reports saved before this rule used the hostname pattern for "Akamai shared".
+  They are corrected on display and in Excel downloads from the saved raw PAPI
+  records; the saved files are not changed and no rerun is needed.
+- Verified against Property Manager on Fox Entertainment (2026-09-24):
+  `qa-foxvideo-weather` (`SHARED_CERT`) shows Shared; `foxvideo-sports` (`CUSTOM`)
+  and `qa-foxvideo-sports` (`EDGE_HOSTNAME`) show "No certificate (HTTP Only)".
 - Failed collections produce Unknown/unavailable rows; properties are never
   dropped. Inactive networks are shown as inactive, not Unknown.
 

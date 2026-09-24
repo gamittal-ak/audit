@@ -458,7 +458,7 @@ def _build_summary_sheet(wb, data):
             rows.append((f"  {name}", ""))
 
     rows.extend([("", ""), ("-- Edge TLS Summary --", ""),
-                 ("TLS interpretation", "Network and certificate provisioning are separate. A TLS network does not prove a deployed certificate. HTTP-only is not inferred from failed probes, missing certificates, or legacy secure flags."),
+                 ("TLS interpretation", "Network and certificate provisioning are separate. A TLS network does not prove a deployed certificate. HTTP-only comes from Property Manager's 'No certificate (HTTP Only)' configuration (PAPI cnameType) or a complete accessible CPS inventory; it is not inferred from failed probes or legacy secure flags. Shared means PAPI cnameType SHARED_CERT."),
                  ("Legacy reports", "Unknown means evidence was unavailable or was not collected. Rerun to collect TLS metadata.")])
     for network, counts in data.get("edge_security_summary", {}).items():
         for mode in ("active", "sTLS", "eTLS", "HTTP-only", "Mixed", "shared", "Unknown", "inactive"):

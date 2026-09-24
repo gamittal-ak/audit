@@ -26,9 +26,24 @@ def classify_hostname(item, edge, network):
     target = hostname(item.get("cnameTo"))
     mode = MODES.get(edge.get("securityType"), "Unknown")
     provisioning = item.get("certProvisioningType", "")
-    shared = (source == target and source.endswith(".akamaized.net")
-              and len(source.split(".")) == 3 and provisioning != "DEFAULT")
-    cert_type = "Akamai shared" if shared else CERTS.get(provisioning, "Unknown")
+    cname_type = item.get("cnameType")
+    # PAPI cnameType=SHARED_CERT is what Property Manager shows as "Shared". An
+    # Akamai-owned *.akamaized.net name without it has no certificate attached, and
+    # Property Manager shows "No certificate (HTTP Only)". The name alone decides neither.
+    shared = cname_type == "SHARED_CERT"
+    akamai_name = (source == target and source.endswith(".akamaized.net")
+                   and len(source.split(".")) == 3)
+    no_certificate = (akamai_name and not shared and cname_type
+                      and provisioning == "CPS_MANAGED")
+    unreported = akamai_name and not shared and not cname_type and provisioning != "DEFAULT"
+    if shared:
+        cert_type = "Akamai shared"
+    elif no_certificate:
+        cert_type = "No certificate"
+    elif unreported:
+        cert_type = "Unknown"
+    else:
+        cert_type = CERTS.get(provisioning, "Unknown")
     cert_status = item.get("certStatus")
     raw_statuses = cert_status.get(network.lower(), []) if isinstance(cert_status, dict) else []
     statuses = sorted({str(s["status"]) for s in (raw_statuses if isinstance(raw_statuses, list) else [])
@@ -39,24 +54,37 @@ def classify_hostname(item, edge, network):
     else:
         evidence.append("Delivery network metadata unavailable; hostname suffix is not proof of TLS mode.")
     if shared:
-        evidence.append("Property and edge hostname are the same single-label *.akamaized.net name (Akamai shared certificate workflow).")
+        evidence.append("PAPI cnameType=SHARED_CERT (Akamai shared certificate; Property Manager shows 'Shared').")
+    elif no_certificate:
+        evidence.append(f"PAPI cnameType={cname_type}, certProvisioningType={provisioning} on an Akamai-owned "
+                        "*.akamaized.net name with no shared certificate: Property Manager shows "
+                        "'No certificate (HTTP Only)'. Clients that still connect over HTTPS receive "
+                        "Akamai's *.akamaized.net wildcard certificate from the edge.")
+    elif unreported:
+        evidence.append("Akamai-owned *.akamaized.net name, but PAPI did not report cnameType, so shared "
+                        "certificate use cannot be established.")
     elif provisioning:
         evidence.append("PAPI certProvisioningType=" + str(provisioning))
     protocol = "HTTPS certificate deployed" if "DEPLOYED" in statuses else "Unknown"
     if shared:
         protocol = "Shared HTTPS configured"
+    elif no_certificate:
+        protocol = "HTTP-only (Property Manager: no certificate)"
     elif provisioning == "DEFAULT" and protocol == "Unknown":
         protocol = "HTTPS provisioning " + (", ".join(statuses).lower() if statuses else "status unknown")
     if statuses:
         evidence.append(network.title() + " certificate status: " + ", ".join(statuses))
     if protocol == "Unknown":
         evidence.append("HTTPS availability and HTTP-only delivery are not established by the collected configuration.")
-    return dict(hostname=item.get("cnameFrom", ""), edge_hostname=item.get("cnameTo", ""),
+    row = dict(hostname=item.get("cnameFrom", ""), edge_hostname=item.get("cnameTo", ""),
                 edge_hostname_id=item.get("edgeHostnameId", ""), tls_mode=mode,
                 certificate_type=cert_type, provisioning_type=provisioning,
                 certificate_status=", ".join(statuses) or "Not reported",
                 protocol=protocol, evidence=" ".join(evidence),
                 raw_hostname=copy.deepcopy(item), edge_metadata=copy.deepcopy(edge))
+    if no_certificate:
+        row["delivery_mode"] = "HTTP-only"
+    return row
 
 
 def summarize(rows, status="collected", reason=""):
@@ -108,7 +136,8 @@ async def collect_property_security(client, switch_key, contract_id, group_id,
                     if row.get(prefix + "CnameTo"):
                         raw.append({**row, "cnameTo": row[prefix + "CnameTo"],
                                     "edgeHostnameId": row.get(prefix + "EdgeHostnameId"),
-                                    "certProvisioningType": row.get(prefix + "CertType")})
+                                    "certProvisioningType": row.get(prefix + "CertType"),
+                                    "cnameType": row.get(prefix + "CnameType")})
             else:
                 key = str(version)
                 if key not in cached:
@@ -134,6 +163,22 @@ async def collect_property_security(client, switch_key, contract_id, group_id,
     return result
 
 
+def _reclassify_legacy_shared(item, network):
+    """Reports saved before cnameType was used labelled every matching *.akamaized.net
+    name as shared. The saved raw PAPI/HAPI records hold the evidence to correct that."""
+    rows = item.get("hostnames") or []
+    stale = [r for r in rows if r.get("certificate_type") == "Akamai shared"
+             and isinstance(r.get("raw_hostname"), dict)
+             and r["raw_hostname"].get("cnameType") != "SHARED_CERT"]
+    if not stale:
+        return item
+    fixed = [classify_hostname(r["raw_hostname"], r.get("edge_metadata") or {}, network) if r in stale else r
+             for r in rows]
+    extra = {k: v for k, v in item.items() if k not in ("status", "reason", "label", "modes",
+             "certificate_types", "hostname_count", "hostnames")}
+    return dict(**summarize(fixed, item.get("status", "collected"), item.get("reason", "")), **extra)
+
+
 def prepare_edge_report(data):
     """Interpret snapshots without changing their saved evidence or legacy columns."""
     data = copy.deepcopy(data)
@@ -149,6 +194,7 @@ def prepare_edge_report(data):
                         if not version else dict(**summarize([], "not_collected",
                         "TLS evidence was not collected in this report. Rerun the audit."), version=version))
                 item = security[network]
+                item = security[network] = _reclassify_legacy_shared(item, network)
                 if item["status"] == "inactive":
                     counts[network]["inactive"] += 1
                     continue

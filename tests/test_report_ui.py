@@ -45,6 +45,7 @@ def report_context(legacy=False):
                     mode = "ENHANCED-TLS" if p["id"] == "prp_1" and network == "PRODUCTION" else "STANDARD-TLS"
                     h = classify_hostname({"cnameFrom":name,"cnameTo":name if shared else name+".edgekey.net",
                         "edgeHostnameId":"42","certProvisioningType":"CPS_MANAGED" if shared else "DEFAULT",
+                        "cnameType":"SHARED_CERT" if shared else "EDGE_HOSTNAME",
                         "certStatus":{network.lower():[{"status":"DEPLOYED"}]}},
                         {"securityType":mode},network)
                     p["edge_security"][network] = dict(**summarize([h]), version=version)

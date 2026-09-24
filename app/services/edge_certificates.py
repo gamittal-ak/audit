@@ -120,7 +120,7 @@ async def collect_certificate_inventory(client, switch_key, contracts):
 
 
 def apply_certificate_evidence(row, edge, network, inventory):
-    if not inventory or row["certificate_type"] == "Akamai shared":
+    if not inventory or row["certificate_type"] in ("Akamai shared", "No certificate"):
         return row
     name = normal(row["hostname"])
     wanted = {"sTLS": "standard-tls", "eTLS": "enhanced-tls"}.get(row["tls_mode"])

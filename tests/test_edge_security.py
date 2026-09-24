@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 import copy
 import json
 from types import SimpleNamespace
@@ -32,13 +33,60 @@ def test_legacy_standard_tls_on_edgekey_and_secure_false_never_imply_http_only()
     assert classify_hostname(h,{},"PRODUCTION")["protocol"]=="Unknown"
 
 
-def test_shared_requires_matching_single_label_hostname():
-    for name,shared in (("video.akamaized.net",True),("a.video.akamaized.net",False),
-                        ("video.akamaized.net.attacker.example",False)):
+def akamaized(name, cname_type, provision="CPS_MANAGED"):
+    item = {"cnameFrom": name, "cnameTo": name, "edgeHostnameId": "1", "certProvisioningType": provision}
+    if cname_type:
+        item["cnameType"] = cname_type
+    return classify_hostname(item, {"securityType": "STANDARD-TLS"}, "PRODUCTION")
+
+
+@pytest.mark.parametrize("cname_type,cert,mode,protocol", [
+    ("SHARED_CERT", "Akamai shared", "sTLS", "Shared HTTPS configured"),
+    ("CUSTOM", "No certificate", "HTTP-only", "HTTP-only (Property Manager: no certificate)"),
+    ("EDGE_HOSTNAME", "No certificate", "HTTP-only", "HTTP-only (Property Manager: no certificate)"),
+    (None, "Unknown", "sTLS", "Unknown"),
+])
+def test_akamaized_certificate_follows_papi_cname_type(cname_type, cert, mode, protocol):
+    row = akamaized("sports.akamaized.net", cname_type)
+    assert row["certificate_type"] == cert
+    assert row.get("delivery_mode", row["tls_mode"]) == mode
+    assert row["protocol"] == protocol
+
+
+def test_edge_hostname_cname_type_alone_is_not_http_only():
+    for provision in ("DEFAULT", "CPS_MANAGED"):
+        item = {"cnameFrom": "www.example.com", "cnameTo": "www.example.com.edgekey.net",
+                "cnameType": "EDGE_HOSTNAME", "certProvisioningType": provision}
+        row = classify_hostname(item, {"securityType": "ENHANCED-TLS"}, "PRODUCTION")
+        assert "delivery_mode" not in row and row["certificate_type"] != "No certificate"
+    assert akamaized("a.video.akamaized.net", "CUSTOM").get("delivery_mode") is None
+    assert akamaized("sports.akamaized.net", "CUSTOM", "DEFAULT")["certificate_type"] == "Default DV"
+
+
+def test_saved_name_based_shared_rows_are_reclassified_on_display():
+    old = akamaized("sports.akamaized.net", "SHARED_CERT")
+    old["raw_hostname"]["cnameType"] = "CUSTOM"
+    kept = akamaized("weather.akamaized.net", "SHARED_CERT")
+    data = {"report": [{"properties": [{"productionVersion": 3, "stagingVersion": None,
+            "edge_security": {"PRODUCTION": dict(**summarize([old, kept]), version=3)}}]}]}
+    out = prepare_edge_report(data)
+    rows = out["report"][0]["properties"][0]["edge_security"]["PRODUCTION"]
+    assert [r["certificate_type"] for r in rows["hostnames"]] == ["No certificate", "Akamai shared"]
+    assert rows["label"] == "Mixed" and rows["version"] == 3
+    assert out["edge_security_summary"]["PRODUCTION"]["HTTP-only"] == 1
+    assert data["report"][0]["properties"][0]["edge_security"]["PRODUCTION"]["hostnames"][0]["certificate_type"] == "Akamai shared"
+
+
+def test_hostname_pattern_alone_never_proves_shared_or_http_only():
+    for name in ("video.akamaized.net","a.video.akamaized.net","video.akamaized.net.attacker.example"):
         h=row();h["cnameFrom"]=name;h["cnameTo"]=name
-        assert (classify_hostname(h,{},"PRODUCTION")["certificate_type"]=="Akamai shared")==shared
-    h=row();h["cnameFrom"]="VIDEO.AKAMAIZED.NET.";h["cnameTo"]="video.akamaized.net"
-    assert classify_hostname(h,{},"PRODUCTION")["certificate_type"]=="Akamai shared"
+        out=classify_hostname(h,{},"PRODUCTION")
+        assert out["certificate_type"]!="Akamai shared" and "delivery_mode" not in out
+    for name in ("a.video.akamaized.net","video.akamaized.net.attacker.example"):
+        h=row(cnameType="CUSTOM");h["cnameFrom"]=name;h["cnameTo"]=name
+        assert "delivery_mode" not in classify_hostname(h,{},"PRODUCTION")
+    h=row(cnameType="CUSTOM");h["cnameFrom"]="VIDEO.AKAMAIZED.NET.";h["cnameTo"]="video.akamaized.net"
+    assert classify_hostname(h,{},"PRODUCTION")["delivery_mode"]=="HTTP-only"
 
 
 def test_network_specific_deployment_status_and_default_pending():
