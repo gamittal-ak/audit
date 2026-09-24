@@ -21,6 +21,8 @@ from app.services.cache_service import get_or_fetch_rule_tree
 from app.services.dns_service import get_network_details
 from app.services.edgegrid_auth import auth_from_edgerc
 from app.services.excel_service import generate_excel
+from app.services.edge_security import collect_property_security
+from app.services.edge_certificates import collect_certificate_inventory
 from app.services.origin_findings import prepare_origin_report
 from app.services.origin_cert_service import (
     extract_origins_from_rule_tree,
@@ -77,7 +79,7 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
     xlsx_path = folder / f"report_{safe_name}_{timestamp}.xlsx"
 
     final_report: Dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "audit_timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "report": [],
         "origin_inventory": [],
@@ -148,13 +150,21 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
         ]
         total_props = sum(len(props) for _, _, props in group_prop_pairs)
 
+        certificate_inventory = await collect_certificate_inventory(
+            client, switch_key, {cid for g in groups for cid in g.get("contractIds", [])}
+        )
+        final_report["edge_certificate_coverage"] = {
+            k: certificate_inventory[k]
+            for k in ("complete", "contracts", "enrollments", "errors", "inaccessible_contracts")
+        }
+
         # ---- Step 3: analyse every property --------------------------------
         _progress(task, f"Analysing {total_props} properties", 20)
         completed_props = 0
 
         async def process_property(group, contract_id, prop):
             nonlocal completed_props
-            result = await _process_property(task, client, redis, switch_key, group, contract_id, prop, settings, probe_sem)
+            result = await _process_property(task, client, redis, switch_key, group, contract_id, prop, settings, probe_sem, certificate_inventory)
             completed_props += 1
             step = f"Analysed {completed_props}/{total_props} properties"
             _progress(task, step, 20 + int(45 * completed_props / max(total_props, 1)), record=False)
@@ -472,7 +482,7 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
 
 async def _process_property(
     task, client, redis, switch_key, group, contract_id, prop_details,
-    settings, probe_sem,
+    settings, probe_sem, certificate_inventory=None,
 ):
     """Fetch and analyse a single property. Returns the property dict."""
     group_id = group["groupId"]
@@ -523,6 +533,11 @@ async def _process_property(
             hostnames_data = {}
         else:
             hostnames_data = hostnames_result
+
+        edge_security = await collect_property_security(
+            client, switch_key, contract_id, group_id, property_id, prop_details,
+            primary_version, hostnames_result, certificate_inventory,
+        )
 
         # Extract activation info
         last_activated = ""
@@ -602,6 +617,9 @@ async def _process_property(
             if h.get("cnameFrom"):
                 cert_idx += 1
             hostnames_out.append({
+                "edgeHostnameId": h.get("edgeHostnameId"),
+                "certProvisioningType": h.get("certProvisioningType"),
+                "certStatus": h.get("certStatus"),
                 "name": h.get("cnameFrom", ""),
                 "cnameFrom": h.get("cnameFrom", ""),
                 "cnameTo": h.get("cnameTo", ""),
@@ -623,18 +641,9 @@ async def _process_property(
                     earliest_expiry = exp
                     cert_issuer = c.get("issuer", "")
 
-        _SHARED_SUFFIXES = (".akamaized.net", ".edgesuite.net", ".edgekey.net")
-        is_shared = any(
-            (h.get("cnameTo") or "").lower().endswith(s)
-            for h in hostnames_out
-            for s in _SHARED_SUFFIXES
-        )
-        if is_shared:
-            cert_type = "Shared Akamai Cert"
-        elif cert_issuer:
-            cert_type = f"Third-Party ({cert_issuer})"
-        else:
-            cert_type = ""
+        certificate_types = sorted({t for n in edge_security.values()
+                                    for t in n["certificate_types"] if t != "Unknown"})
+        cert_type = ", ".join(certificate_types) or "Unknown"
 
         if earliest_expiry:
             try:
@@ -743,6 +752,7 @@ async def _process_property(
             "productionVersion": prop_details.get("productionVersion"),
             "cpcodes": cpcodes_out,
             "hostnames": hostnames_out,
+            "edge_security": edge_security,
             "adv_override_exists": adv_override,
             "custom_override_exists": custom_override,
             "count_custom_behavior": custom_behavior_count,

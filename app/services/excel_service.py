@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.services.origin_findings import prepare_origin_report
+from app.services.edge_security import prepare_edge_report
+from app.services.pivot_service import build_audit_pivots
 
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
@@ -79,7 +81,7 @@ _ACTION_HEADERS = [
 
 def generate_excel(json_path: str, xlsx_path: str) -> str:
     with open(json_path, "r", encoding="utf-8") as f:
-        data = prepare_origin_report(json.load(f))
+        data = prepare_edge_report(prepare_origin_report(json.load(f)))
 
     wb = Workbook()
     ws = wb.active
@@ -137,6 +139,9 @@ def generate_excel(json_path: str, xlsx_path: str) -> str:
     _build_origins_sheet(wb, data)
     _build_origin_certs_sheet(wb, data)
     _build_origin_actions_sheet(wb, data)
+
+    _build_edge_sheets(wb, data)
+    build_audit_pivots(wb, data)
 
     wb.save(xlsx_path)
     return xlsx_path
@@ -452,6 +457,14 @@ def _build_summary_sheet(wb, data):
         for name in expiring_certs:
             rows.append((f"  {name}", ""))
 
+    rows.extend([("", ""), ("-- Edge TLS Summary --", ""),
+                 ("TLS interpretation", "Network and certificate provisioning are separate. A TLS network does not prove a deployed certificate. HTTP-only is not inferred from failed probes, missing certificates, or legacy secure flags."),
+                 ("Legacy reports", "Unknown means evidence was unavailable or was not collected. Rerun to collect TLS metadata.")])
+    for network, counts in data.get("edge_security_summary", {}).items():
+        for mode in ("active", "sTLS", "eTLS", "HTTP-only", "Mixed", "shared", "Unknown", "inactive"):
+            rows.append((network.title() + " properties: " + mode, counts.get(mode, 0)))
+    rows.append(("Counting", "Each property is counted once per network and category. Mixed and shared counts may overlap TLS network counts."))
+
     for r in rows:
         ws.append(list(r))
 
@@ -671,3 +684,41 @@ def _build_origin_actions_sheet(wb, data):
             for cell in row:
                 cell.fill = _cert_warn_fill
                 cell.font = _cert_warn_font
+
+
+def _build_edge_sheets(wb, data):
+    props = wb.create_sheet("Edge TLS")
+    props.append(["Group", "Contract ID", "Property", "Property ID", "Network",
+                  "Version", "Delivery mode", "Certificate types", "Hostnames",
+                  "Collection status", "Coverage note"])
+    hosts = wb.create_sheet("Edge Hostnames")
+    hosts.append(["Group", "Contract ID", "Property", "Property ID", "Network",
+                  "Version", "Hostname", "Edge hostname", "Edge hostname ID",
+                  "TLS network", "Certificate type", "Certificate provisioning",
+                  "Certificate status", "HTTPS availability", "Evidence"])
+    for group in data.get("report", []):
+        for prop in group.get("properties", []):
+            for network, item in prop["edge_security"].items():
+                base = [group.get("groupname", ""), group.get("contractid", ""),
+                        prop.get("name", ""), prop.get("id", ""), network, item.get("version", "")]
+                props.append(base + [item["label"], ", ".join(item["certificate_types"]),
+                                    item["hostname_count"], item["status"], item["reason"]])
+                for h in item["hostnames"]:
+                    hosts.append(base + [h["hostname"], h["edge_hostname"], h["edge_hostname_id"],
+                                         h["tls_mode"], h["certificate_type"], h["provisioning_type"],
+                                         h["certificate_status"], h["protocol"], h["evidence"]])
+    for ws in (props, hosts):
+        ws.freeze_panes = "G2"
+        ws.auto_filter.ref = ws.dimensions
+        for cell in ws[1]:
+            cell.fill = _header_fill
+            cell.font = _header_font
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+        for column in ws.columns:
+            ws.column_dimensions[column[0].column_letter].width = min(55, max(16, len(str(column[0].value)) + 3))
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                # Evidence and hostnames are external text, never Excel formulas.
+                if isinstance(cell.value, str):
+                    cell.data_type = "s"
+                cell.alignment = Alignment(wrap_text=True, vertical="top")

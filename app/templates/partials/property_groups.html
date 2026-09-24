@@ -4,7 +4,7 @@
     <div class="accordion-item border mb-2 rounded" data-group-index="{{ g_idx }}">
       <h2 class="accordion-header">
         <button
-          class="accordion-button {% if not loop.first %}collapsed{% endif %} fw-semibold"
+          class="accordion-button  fw-semibold"
           type="button"
           data-bs-toggle="collapse"
           data-bs-target="#group-{{ g_idx }}"
@@ -17,7 +17,7 @@
       </h2>
       <div
         id="group-{{ g_idx }}"
-        class="accordion-collapse collapse {% if loop.first %}show{% endif %}"
+        class="accordion-collapse collapse show"
 
       >
         <div class="accordion-body p-0">
@@ -31,13 +31,30 @@
           {% for h in prop.hostnames %}{% set fields.items = fields.items + [{'label':'Hostname','value':(h.cnameFrom or h.name or '') ~ ' ' ~ (h.cnameTo or ''), 'tab':'hn'}] %}{% endfor %}
           {% for cp in prop.cpcodes %}{% set fields.items = fields.items + [{'label':'CP Code','value':cp.cpcode | join(' ') ~ ' ' ~ cp.description | join(' ') ~ ' ' ~ cp.product | join(' '), 'tab':'cp'}] %}{% endfor %}
           {% if prop.origin is string %}{% set fields.items = fields.items + [{'label':'Origin','value':prop.origin}] %}{% else %}{% for origin in prop.origin or [] %}{% set fields.items = fields.items + [{'label':'Origin','value':origin}] %}{% endfor %}{% endif %}
-          <details class="property-card" data-property data-prop-id="{{ prop.id }}" data-fields='{{ fields.items | tojson }}' data-edge-warning="{{ 'true' if prop.cert_expiry_days is number and prop.cert_expiry_days <= 30 else 'false' }}">
+          {% set security = prop.edge_security | default({}) %}
+          {% for net, item in security.items() %}
+            {% for h in item.hostnames %}{% set fields.items = fields.items + [{'label':'TLS','value':net ~ ' ' ~ h.hostname ~ ' ' ~ h.edge_hostname ~ ' ' ~ h.tls_mode ~ ' ' ~ h.certificate_type ~ ' ' ~ h.protocol}] %}{% endfor %}
+          {% endfor %}
+          {% set traffic = namespace(gb=0, available=false) %}{% for cp in prop.cpcodes %}{% if cp.traffic and cp.traffic.edgeBytes is number %}{% set traffic.gb = traffic.gb + cp.traffic.edgeBytes %}{% set traffic.available = true %}{% endif %}{% endfor %}
+          <details class="property-card" data-security='{{ security | tojson }}' data-name="{{ prop.name }}" data-hostnames="{{ prop.hostnames | length }}" data-traffic="{{ traffic.gb }}" data-property data-prop-id="{{ prop.id }}" data-fields='{{ fields.items | tojson }}' data-edge-warning="{{ 'true' if prop.cert_expiry_days is number and prop.cert_expiry_days <= 30 else 'false' }}">
           <summary class="property-summary">
+            <div class="property-identity"><span class="property-name">{{ prop.name }}</span><span class="property-id">{{ prop.id }}</span>{% if prop.cert_expiry_days is number and prop.cert_expiry_days <= 30 %}<span class="finding-dot" title="Edge certificate expired or due within 30 days">Certificate due</span>{% endif %}</div>
+            {% for network in ['PRODUCTION','STAGING'] %}{% set item = security.get(network, {}) %}
+            <div class="property-network"><span class="mobile-label">{{ network | title }}</span><span class="tls-badge" data-mode="{{ item.get('label','Unknown') }}">{{ item.get('label','Unknown') }}</span><span class="version-label">{% set v = prop.productionVersion if network == 'PRODUCTION' else prop.stagingVersion %}{{ 'v' ~ v if v else 'Not active' }}</span></div>
+            {% endfor %}
+            <div class="property-cert"><span class="mobile-label">Certificates</span>{{ prop.edge_certificate_label | default('Unknown') }}</div>
+            <div class="property-quantity"><span class="mobile-label">Hostnames</span>{{ prop.hostnames | length }}</div>
+            <div class="property-quantity"><span class="mobile-label">Edge traffic</span>{{ '%.1f' | format(traffic.gb) if traffic.available else '—' }} <span class="text-muted">GB</span></div>
+            <span class="property-open-label">Details <i class="bi bi-chevron-down" aria-hidden="true"></i></span>
+            <div class="property-match" hidden></div>
+          </summary>
+          <div class="property-body">
+          <div class="property-expanded-meta">
 
             {# ---- property header ---- #}
             <div class="property-heading d-flex flex-wrap align-items-start justify-content-between gap-2 mb-3">
               <div class="identity d-flex align-items-center gap-2">
-                <span class="property-name fw-semibold fs-6">{{ prop.name }}</span>
+                <span class="property-detail-name fw-semibold fs-6">{{ prop.name }}</span>
                 <span class="text-muted font-monospace small">{{ prop.id }}</span>
                 {% set prop_ns = namespace(off_sum=0.0, off_n=0) %}
                 {% for cp in prop.cpcodes %}
@@ -78,9 +95,9 @@
             </div>
 
             <div class="property-subline">{{ prop.hostnames | length }} hostnames · {{ prop.cpcodes | length }} CP Code entries <span class="ms-2">View details</span></div>
-            <div class="property-match" hidden></div>
-          </summary>
-          <div class="property-body">
+
+          </div>
+
             {# ---- property metadata row ---- #}
             <div class="d-flex flex-wrap gap-3 mb-2 small text-muted">
               {% if prop.last_activated %}
@@ -91,13 +108,15 @@
               {% endif %}
               {% if prop.cert_expiry %}
               <span><i class="bi bi-shield-lock me-1"></i><strong>Edge Cert:</strong> {{ prop.cert_expiry }}
-                {% if prop.cert_type %} — {{ prop.cert_type }}{% elif prop.cert_issuer %} ({{ prop.cert_issuer }}){% endif %}
+                {% if prop.cert_issuer %} ({{ prop.cert_issuer }}){% endif %} — {{ prop.edge_certificate_label | default("Unknown; rerun to classify") }}
               </span>
               {% endif %}
               {% if prop.min_tls %}
               <span><i class="bi bi-lock me-1"></i><strong>Min TLS:</strong> {{ prop.min_tls }}</span>
               {% endif %}
             </div>
+
+            {% include "partials/edge_security.html" %}
 
             {# ---- origins ---- #}
             {% if prop.origin %}
@@ -115,18 +134,7 @@
             {# ---- tabs: CP Codes | Hostnames ---- #}
             {% set tab_id = "prop-" ~ g_idx ~ "-" ~ loop.index %}
             <div class="d-flex align-items-center justify-content-between mb-2">
-              <ul class="nav nav-tabs nav-sm mb-0" id="{{ tab_id }}-tabs" role="tablist">
-                <li class="nav-item">
-                  <button class="nav-link active small" role="tab" aria-selected="true" data-bs-toggle="tab" data-bs-target="#{{ tab_id }}-cp" onclick="showColPicker('{{ tab_id }}','cp')">
-                    CP Codes ({{ prop.cpcodes | length }})
-                  </button>
-                </li>
-                <li class="nav-item">
-                  <button class="nav-link small" role="tab" aria-selected="false" data-bs-toggle="tab" data-bs-target="#{{ tab_id }}-hn" onclick="showColPicker('{{ tab_id }}','hn')">
-                    Hostnames ({{ prop.hostnames | length }})
-                  </button>
-                </li>
-              </ul>
+              <h3 class="mb-0">Delivery details</h3>
               <div class="dropdown">
                 <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" title="Select columns">
                   <i class="bi bi-layout-three-columns me-1"></i>Columns
@@ -145,7 +153,7 @@
                     </div>
                     {% endfor %}
                   </div>
-                  <div class="col-picker-hn d-none">
+                  <div class="col-picker-hn">
                     <div class="dropdown-header small fw-bold px-1 d-flex justify-content-between align-items-center">
                       Hostname Columns
                       <a href="#" class="text-primary small text-decoration-none" onclick="selectAllCols('{{ tab_id }}','hn',true);return false">Select All</a>
@@ -162,10 +170,10 @@
               </div>
             </div>
 
-            <div class="tab-content">
+            <div class="property-data-sections">
 
               {# CP Codes tab #}
-              <div class="tab-pane fade show active" id="{{ tab_id }}-cp">
+              <div class="property-data-section" id="{{ tab_id }}-cp"><h4>CP Codes <span class="tab-count">{{ prop.cpcodes | length }}</span></h4>
                 {% if prop.cpcodes %}
                 <div class="table-responsive" tabindex="0" role="region" aria-label="Property data table">
                   <table class="table table-sm table-hover mb-0 small">
@@ -224,7 +232,7 @@
               </div>
 
               {# Hostnames tab #}
-              <div class="tab-pane fade" id="{{ tab_id }}-hn">
+              <div class="property-data-section" id="{{ tab_id }}-hn"><h4>Hostnames &amp; observed certificates <span class="tab-count">{{ prop.hostnames | length }}</span></h4><p class="small text-muted">Primary audited version (production, or latest when production is inactive). Active staging mappings are listed under Edge TLS above.</p>
                 {% if prop.hostnames %}
                 <div class="table-responsive" tabindex="0" role="region" aria-label="Property data table">
                   <table class="table table-sm table-hover mb-0 small">

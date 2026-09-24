@@ -48,7 +48,7 @@ return interval
 
 
 def api_scope(path):
-    if path.startswith('/papi/'):
+    if path.startswith(('/papi/', '/hapi/', '/cps/')):
         return 'papi'
     if path.startswith('/reporting-api/'):
         return 'reporting'

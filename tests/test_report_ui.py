@@ -11,6 +11,11 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 ROOT = Path(__file__).resolve().parents[1]
 ENV = Environment(loader=FileSystemLoader(str(ROOT / "app/templates")), autoescape=select_autoescape())
 
+def prepare_groups(groups):
+    from app.services.edge_security import prepare_edge_report
+    return prepare_edge_report({"report":groups})["report"]
+
+
 def report_context(legacy=False):
     def prop(name, ident, hostname, days):
         return dict(name=name,id=ident,productionVersion=4,stagingVersion=5,
@@ -29,6 +34,21 @@ def report_context(legacy=False):
         certs.append(dict(origin_hostname=host,property_name="www.example.com",akamai_network="PRODUCTION",source="live_leaf",subject_cn=host,issuer_org="Example CA",issuer_cn="Example CA",not_after="2026-10-12T00:00:00Z",days_remaining=-2 if i==0 else 12 if i==1 else 100,is_expired=i==0,is_not_yet_valid=False,key_algorithm="RSA",key_size=2048,sha256_fingerprint="ABCD"*16))
     for i in range(2):
         actions.append(dict(severity="critical" if i==0 else "warning",property_name="www.example.com",origin_hostname=f"origin-{i}.example.com",akamai_network="PRODUCTION",finding="Certificate expired" if i==0 else "Certificate expires soon",days_remaining=-2 if i==0 else 12,recommendation="Renew the origin certificate and verify the deployed chain."))
+    if not legacy:
+        from app.services.edge_security import classify_hostname, summarize, prepare_edge_report
+        for group in groups:
+            for p in group["properties"]:
+                shared = p["id"] == "prp_3"
+                name = "video.akamaized.net" if shared else p["hostnames"][0]["cnameFrom"]
+                p["edge_security"] = {}
+                for network, version in (("PRODUCTION",4),("STAGING",5)):
+                    mode = "ENHANCED-TLS" if p["id"] == "prp_1" and network == "PRODUCTION" else "STANDARD-TLS"
+                    h = classify_hostname({"cnameFrom":name,"cnameTo":name if shared else name+".edgekey.net",
+                        "edgeHostnameId":"42","certProvisioningType":"CPS_MANAGED" if shared else "DEFAULT",
+                        "certStatus":{network.lower():[{"status":"DEPLOYED"}]}},
+                        {"securityType":mode},network)
+                    p["edge_security"][network] = dict(**summarize([h]), version=version)
+    groups = prepare_groups(groups)
     return dict(request=None,account_name="Example Digital",task_id="demo",report=groups,
        chart_json=json.dumps({"properties":[p for g in groups for p in g["properties"]]}),
        origin_coverage={} if legacy else dict(total_origins=60,probed=59,http_only=0,unreachable=1,skipped=0,unresolved=0,expired=1,expiring_30d=1,actions_critical=1,actions_warning=1),
@@ -115,7 +135,8 @@ def test_report_navigation_search_origins_and_mobile(browser,preview_server):
     page.goto(preview_server+"/report/demo")
     page.wait_for_selector('[data-initialized="true"]')
     assert page.locator("#properties-panel").is_visible()
-    assert not page.locator("#origins-panel").is_visible()
+    assert page.locator("#origins-panel").is_visible()
+    assert page.locator('[role="tab"]').count()==0
     before=page.locator("#group-2").evaluate("(el)=>el.classList.contains('show')")
     page.locator("#propSearch").fill("video.example.com")
     assert page.locator('[data-property]:visible').count()==1
@@ -286,4 +307,37 @@ def test_live_activity_polling_scroll_retention_and_mobile(browser, preview_serv
     assert page.locator("#audit-log-output").count() == 0
     assert not page.locator("#report-content").get_attribute("hx-trigger")
     assert not errors, errors
+    page.close()
+
+
+def test_tls_comparison_filters_and_complete_inline_details(browser,preview_server):
+    page=browser.new_page(viewport={"width":1440,"height":1100},ignore_https_errors=True)
+    errors=[];page.on("pageerror",lambda error:errors.append(str(error)))
+    page.goto(preview_server+"/report/demo")
+    page.wait_for_selector('[data-initialized="true"]')
+    assert page.locator('[data-tls-count="eTLS"]').inner_text()=="1"
+    page.locator('[data-tls-filter="eTLS"]').click()
+    assert page.locator('[data-property]:visible').count()==1
+    page.locator(".property-summary:visible").click()
+    assert page.locator('[data-property]:visible [id$="-cp"]').is_visible()
+    assert page.locator('[data-property]:visible [id$="-hn"]').is_visible()
+    assert page.locator('[data-property]:visible .edge-detail').is_visible()
+    page.locator("#tlsNetwork").select_option("STAGING")
+    assert page.locator("#noResultsMsg").is_visible()
+    page.locator('[data-tls-filter="sTLS"]').click()
+    assert page.locator('[data-property]:visible').count()==3
+    page.locator("#propCertificate").select_option("Akamai shared")
+    assert page.locator('[data-property]:visible').count()==1
+    assert "video.example.com" in page.locator('[data-property]:visible .property-name').inner_text()
+    page.locator("#propSearchClear").click()
+    page.locator("#propSearchScope").select_option("TLS")
+    page.locator("#propSearch").fill("video.akamaized.net")
+    assert page.locator('[data-property]:visible').count()==1
+    page.locator("#propSearchClear").click()
+    page.screenshot(path="/tmp/audit-ui-redesign-desktop.png",full_page=True)
+    for width in (1024,800,390):
+        page.set_viewport_size({"width":width,"height":900})
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
+    page.screenshot(path="/tmp/audit-ui-redesign-mobile.png",full_page=True)
+    assert not errors,errors
     page.close()

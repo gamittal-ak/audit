@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Reports — Akamai Audit{% endblock %}
 {% block content %}
-<div class="page-heading"><h1>Account audits</h1><p>Run an audit, investigate findings, and export the complete report.</p></div>
+<div class="home-heading"><div><span class="eyebrow">Audit workspace</span><h1>Your account audits</h1><p>Configuration, delivery, and certificate findings in one place.</p></div><a class="btn btn-outline-secondary" href="#report-history"><i class="bi bi-clock-history me-2" aria-hidden="true"></i>Browse reports</a></div>
 <div class="home-grid">
   <section class="surface search-panel" aria-labelledby="account-search-title">
-    <div class="surface-header"><div><h2 id="account-search-title" class="mb-0">Run an audit</h2></div><i class="bi bi-search text-muted" aria-hidden="true"></i></div>
+    <div class="surface-header"><div><span class="eyebrow">Start here</span><h2 id="account-search-title">Run an account audit</h2><p class="text-muted mb-0">Choose an account to collect active configurations, traffic, and certificate findings.</p><div class="audit-includes"><span><i class="bi bi-layers"></i> Configurations &amp; TLS</span><span><i class="bi bi-shield-check"></i> Origin certificates</span><span><i class="bi bi-download"></i> Excel export</span></div></div></div>
     <div class="surface-body">
       <label class="form-label" for="search-input">Account name</label>
       <div class="search-field"><i class="bi bi-search" aria-hidden="true"></i><input id="search-input" type="search" class="form-control" placeholder="Search accounts…" hx-get="/api/accounts/search" hx-trigger="input changed delay:350ms" hx-target="#results" hx-swap="none" hx-sync="this:replace" hx-indicator="#spinner" name="q" autocomplete="off" aria-describedby="account-search-help"></div>
@@ -13,7 +13,7 @@
       <div id="results" aria-live="polite"></div>
     </div>
   </section>
-  <section class="surface history-panel" aria-label="Report history">
+  <section class="surface history-panel" id="report-history" aria-label="Report history">
     <div id="history-message" class="history-message" role="status" hidden></div>
     <div id="task-list" hx-get="/api/tasks/recent" hx-trigger="load" hx-target="#task-list" hx-swap="outerHTML"><div class="surface-header"><h2>Recent reports</h2></div><div class="empty-state">Loading report history…</div></div>
   </section>

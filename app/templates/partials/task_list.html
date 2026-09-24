@@ -1,9 +1,13 @@
 <div id="task-list" hx-get="/api/tasks/recent" hx-trigger="{{ 'every 5s' if any_running else 'none' }}" hx-target="#task-list" hx-swap="outerHTML">
 <div class="surface-header">
-  <div><h2 class="mb-0">Recent reports <span class="tab-count">{{ tasks | length }}</span></h2></div>
+  <div><h2 class="mb-0">Report history <span class="tab-count">{{ tasks | length }}</span></h2></div>
   <div class="d-flex align-items-center gap-2">{% if tasks %}<div class="dropdown"><button type="button" class="btn btn-light btn-sm" data-bs-toggle="dropdown" aria-label="Manage reports"><i class="bi bi-three-dots" aria-hidden="true"></i></button><ul class="dropdown-menu dropdown-menu-end"><li><button class="dropdown-item text-danger" type="button" onclick="HistoryUI.deleteShown()">Delete all shown finished reports…</button></li></ul></div>{% endif %}{% if any_running %}<span class="small text-muted"><span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Audits running</span>{% endif %}</div>
 </div>
 {% if tasks %}
+<div class="history-overview">
+{% for state,label in [('SUCCESS','Complete'),('PROGRESS','Running'),('PENDING','Queued'),('FAILURE','Failed')] %}
+<button type="button" onclick="document.getElementById('filter-status').value='{{ state }}';HistoryUI.filtersChanged()"><span class="status-dot status-{{ state | lower }}"></span><strong>{{ tasks | selectattr('state','equalto',state) | list | length }}</strong> {{ label }}</button>
+{% endfor %}</div>
 <div class="history-toolbar">
   <input class="form-control" type="search" id="filter-account" placeholder="Filter by account…" aria-label="Filter report history by account" oninput="HistoryUI.filtersChanged()">
   <select class="form-select" id="filter-status" aria-label="Filter report status" onchange="HistoryUI.filtersChanged()"><option value="">All statuses</option><option value="SUCCESS">Complete</option><option value="PROGRESS">Running</option><option value="FAILURE">Failed</option><option value="PENDING">Queued</option><option value="REVOKED">Cancelled</option></select>
@@ -23,6 +27,7 @@
   <a href="/report/{{ t.task_id }}" class="task-link"><div class="task-name">{{ t.account_name }}</div><div class="task-meta">{{ t.started_at }}</div>
   {% if running and t.state != 'PENDING' %}<div class="progress mt-2" style="height:4px"><div class="progress-bar" style="width:{{ t.pct }}%"></div></div><div class="task-meta">{{ t.step }}</div>{% endif %}</a>
   <span class="task-status badge {{ 'bg-success' if status == 'SUCCESS' else 'bg-danger' if status == 'FAILURE' else 'bg-primary' if status == 'PROGRESS' else 'bg-secondary' }}">{{ 'Complete' if status == 'SUCCESS' else 'Failed' if status == 'FAILURE' else 'Cancelled' if status == 'REVOKED' else (t.pct|string) ~ '%' if status == 'PROGRESS' else 'Queued' if status == 'PENDING' else 'Unknown' }}</span>
+  {% if status == 'SUCCESS' %}<a class="history-export" href="/api/reports/{{ t.task_id }}/download/xlsx" aria-label="Download Excel for {{ t.account_name }}" title="Download Excel"><i class="bi bi-file-earmark-spreadsheet" aria-hidden="true"></i><span>Excel</span></a>{% endif %}
   {% if running %}<a class="btn btn-light btn-sm" href="/report/{{ t.task_id }}">View</a>{% else %}<button type="button" class="row-delete" data-delete-id="{{ t.task_id }}" aria-label="Delete {{ t.account_name }} report from {{ t.started_at }}" title="Delete report" onclick="HistoryUI.deleteOne(this.dataset.deleteId)"><i class="bi bi-trash" aria-hidden="true"></i></button>{% endif %}
 </div>
 {% endfor %}

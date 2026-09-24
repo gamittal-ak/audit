@@ -8,12 +8,12 @@
 <div class="origin-stat"><strong>{{ value }}</strong>{{ label }}</div>
 {% endfor %}</div>
 
-<nav class="nav origin-nav" role="tablist" aria-label="Origin audit views">
+<nav class="origin-jumps" aria-label="Jump to origin details">
 {% for key,label,items in [('actions','Findings',origin_actions),('inventory','Inventory',origin_inventory),('certificates','Certificates',origin_certificates)] %}
-<button type="button" class="nav-link {{ 'active' if loop.first else '' }}" id="origin-{{ key }}-tab" data-bs-toggle="tab" data-bs-target="#origin-{{ key }}" role="tab" aria-controls="origin-{{ key }}" aria-selected="{{ 'true' if loop.first else 'false' }}">{{ label }}<span class="tab-count">{{ items | length }}</span></button>
+<a id="origin-{{ key }}-tab" href="#origin-{{ key }}" data-scroll-target="origin-{{ key }}">{{ label }} <span class="tab-count">{{ items | length }}</span></a>
 {% endfor %}</nav>
-<div class="tab-content">
-<section class="tab-pane origin-panel active" id="origin-actions" role="tabpanel" aria-labelledby="origin-actions-tab" tabindex="0">
+<div class="origin-sections">
+<section class="origin-panel" id="origin-actions" aria-labelledby="origin-actions-tab" tabindex="0"><div class="section-heading"><div><h3>Certificate findings</h3><p>Grouped findings with the affected origins and recommended follow-up.</p></div></div>
 <div class="origin-toolbar">
 <div class="search-field"><i class="bi bi-search" aria-hidden="true"></i><input type="search" class="form-control origin-search" placeholder="Search certificate, origin, property, or rule…" aria-label="Search origin actions" oninput="AuditUI.filterOrigins(this)"></div>
 <select class="form-select origin-filter" aria-label="Filter origin actions" onchange="AuditUI.filterOrigins(this)"><option value="">All severities</option><option value="critical">Critical</option><option value="warning">Warning</option><option value="info">Info / renewal review</option></select>
@@ -63,7 +63,7 @@
           </table></div>
 <div class="empty-state origin-no-match" hidden>No matching rows. Try another search or reset the filters.</div>
 {% else %}<div class="surface empty-state">No origin findings reported. Check inventory coverage for origins that could not be verified.</div>{% endif %}
-</section><section class="tab-pane origin-panel " id="origin-inventory" role="tabpanel" aria-labelledby="origin-inventory-tab" tabindex="0">
+</section><section class="origin-panel" id="origin-inventory" aria-labelledby="origin-inventory-tab" tabindex="0"><div class="section-heading"><div><h3>Origin inventory</h3><p>Every collected origin reference, including version, rule path, SNI, and trust settings.</p></div></div>
 <div class="origin-toolbar">
 <div class="search-field"><i class="bi bi-search" aria-hidden="true"></i><input type="search" class="form-control origin-search" placeholder="Search inventory…" aria-label="Search origin inventory" oninput="AuditUI.filterOrigins(this)"></div>
 <select class="form-select origin-filter" aria-label="Filter origin inventory" onchange="AuditUI.filterOrigins(this)"><option value="">All statuses</option>{% for status in origin_inventory | map(attribute='observation_status') | unique %}<option value="{{ status }}">{{ status | replace('_',' ') | title }}</option>{% endfor %}</select>
@@ -113,7 +113,7 @@
             </table></div>
 <div class="empty-state origin-no-match" hidden>No matching rows. Try another search or reset the filters.</div>
 {% else %}<div class="surface empty-state">No origins were discovered in this audit.</div>{% endif %}
-</section><section class="tab-pane origin-panel " id="origin-certificates" role="tabpanel" aria-labelledby="origin-certificates-tab" tabindex="0">
+</section><section class="origin-panel" id="origin-certificates" aria-labelledby="origin-certificates-tab" tabindex="0"><div class="section-heading"><div><h3>Collected certificates</h3><p>Observed certificates, configured pins, and configured certificate authorities.</p></div></div>
 <div class="origin-toolbar">
 <div class="search-field"><i class="bi bi-search" aria-hidden="true"></i><input type="search" class="form-control origin-search" placeholder="Search certificates…" aria-label="Search origin certificates" oninput="AuditUI.filterOrigins(this)"></div>
 <select class="form-select origin-filter" aria-label="Filter origin certificates" onchange="AuditUI.filterOrigins(this)"><option value="">All statuses</option><option value="renewal-review">Short-lived / renewal unverified</option><option value="expired">Expired</option><option value="expiring">Expiring within 30 days</option><option value="not-yet-valid">Not yet valid</option></select>

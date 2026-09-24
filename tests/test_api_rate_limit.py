@@ -136,7 +136,7 @@ def test_configuration_cannot_exceed_safe_caps():
             Settings(_env_file=None, **{field: value})
 
 
-@pytest.mark.parametrize('path,scope', [('/papi/v1/groups','papi'),
+@pytest.mark.parametrize('path,scope', [('/papi/v1/groups','papi'), ('/hapi/v1/edge-hostnames','papi'), ('/cps/v2/enrollments','papi'),
     ('/reporting-api/v2/reports/delivery/traffic/current/data','reporting'),
     ('/identity-management/v3/api-clients/self/account-switch-keys','identity')])
 def test_every_api_family_is_paced(path, scope):

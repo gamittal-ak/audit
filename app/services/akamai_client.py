@@ -75,7 +75,7 @@ class AkamaiClient:
     def _url(self, path: str) -> str:
         return urljoin(self.base_url, path)
 
-    async def _request(self, method, path, params=None, json_body=None, max_attempts=None):
+    async def _request(self, method, path, params=None, json_body=None, max_attempts=None, headers=None):
         scope = api_scope(path)
         attempts = max_attempts or self.settings.akamai_max_attempts
         for attempt in range(1, attempts + 1):
@@ -83,7 +83,7 @@ class AkamaiClient:
                 await self._limiter.acquire(scope)
                 resp = await self._client.request(
                     method, self._url(path), params=params, json=json_body,
-                    headers=_PAPI_HEADERS if scope == 'papi' else _REPORT_HEADERS,
+                    headers=headers or (_PAPI_HEADERS if scope == 'papi' else _REPORT_HEADERS),
                 )
                 await self._limiter.observe(scope, resp)
                 waf_block = is_waf_rate_block(resp)
@@ -155,6 +155,46 @@ class AkamaiClient:
                 "includeCertStatus": "true",
             },
         )
+
+    async def get_cps_enrollments(self, switch_key, contract_id):
+        response = await self._request("GET", "/cps/v2/enrollments",
+            params={"accountSwitchKey": switch_key, "contractId": contract_id},
+            headers={"Accept": "application/vnd.akamai.cps.enrollments.v11+json"})
+        response.raise_for_status()
+        return response.json()
+
+    async def get_cps_deployments(self, switch_key, enrollment_id):
+        response = await self._request("GET", f"/cps/v2/enrollments/{enrollment_id}/deployments",
+            params={"accountSwitchKey": switch_key},
+            headers={"Accept": "application/vnd.akamai.cps.deployments.v7+json"})
+        response.raise_for_status()
+        return response.json()
+
+    async def get_edge_security_catalog(self, switch_key: str) -> dict:
+        # Single flight per account within this audit; failures are shared too.
+        if not hasattr(self, "_edge_security_tasks"):
+            self._edge_security_tasks = {}
+        if switch_key not in self._edge_security_tasks:
+            self._edge_security_tasks[switch_key] = asyncio.create_task(
+                self._get("/hapi/v1/edge-hostnames", {"accountSwitchKey": switch_key}))
+        return await self._edge_security_tasks[switch_key]
+
+    async def get_active_hostnames(self, switch_key, contract_id, group_id, property_id):
+        rows, offset = [], 0
+        while True:
+            payload = await self._get(f"/papi/v1/properties/{property_id}/hostnames", {
+                "accountSwitchKey": switch_key, "contractId": contract_id, "groupId": group_id,
+                "includeCertStatus": "true", "limit": 1000, "offset": offset})
+            block = payload["hostnames"]
+            items = block["items"]
+            if not isinstance(items, list):
+                raise ValueError("Invalid active hostname inventory")
+            rows.extend(items)
+            if len(rows) >= block.get("totalItems", len(rows)):
+                return rows
+            if not items:
+                raise ValueError("Incomplete active hostname inventory")
+            offset += len(items)
 
     async def get_rule_tree(
         self,

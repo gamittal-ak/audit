@@ -1,0 +1,18 @@
+<section class="edge-detail" aria-label="Edge TLS and certificates">
+  <div class="section-heading"><div><h3>Edge TLS &amp; certificates</h3><p>Active configuration by Akamai network. Certificate provisioning is separate from HTTPS availability.</p></div></div>
+  {% for network, item in (prop.edge_security | default({})).items() %}
+  <div class="edge-network-heading"><strong>{{ network | title }}</strong><span>{{ 'v' ~ item.version if item.version else 'Not active' }}</span><span class="tls-badge" data-mode="{{ item.label }}">{{ item.label }}</span></div>
+  {% if item.reason %}<p class="coverage-note">{{ item.reason }}</p>{% endif %}
+  {% if item.hostnames %}
+  <div class="table-responsive" tabindex="0" role="region" aria-label="{{ network | title }} edge TLS hostnames">
+    <table class="table table-sm"><thead><tr><th>Hostname / edge hostname</th><th>Delivery / TLS</th><th>Certificate</th><th>HTTPS availability</th><th>Evidence</th></tr></thead><tbody>
+    {% for h in item.hostnames %}<tr>
+      <td><strong>{{ h.hostname }}</strong><div class="text-muted">{{ h.edge_hostname }}</div><div class="text-muted">Edge ID {{ h.edge_hostname_id or 'Not reported' }}</div></td>
+      <td><span class="tls-badge" data-mode="{{ h.tls_mode }}">{{ h.get("delivery_mode", h.tls_mode) }}</span>{% if h.get("delivery_mode") %}<div class="text-muted">{{ h.tls_mode }} network</div>{% endif %}</td>
+      <td>{{ h.certificate_type }}<div class="text-muted">{{ h.certificate_status }}</div></td>
+      <td>{{ h.protocol }}</td><td><details class="finding-details"><summary>Why this label</summary><p>{{ h.evidence }}</p></details></td>
+    </tr>{% endfor %}</tbody></table>
+  </div>
+  {% endif %}{% endfor %}
+  {% if not prop.edge_security %}<p class="coverage-note">TLS evidence was not collected in this report. Rerun the audit.</p>{% endif %}
+</section>

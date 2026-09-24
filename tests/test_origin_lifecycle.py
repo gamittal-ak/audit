@@ -148,7 +148,8 @@ def test_excel_retains_sheets_columns_rows_and_corrected_recommendations(tmp_pat
     path.write_text(json.dumps(raw));before=path.read_bytes()
     generate_excel(str(path),str(out))
     wb=load_workbook(out)
-    assert wb.sheetnames==["Summary","All Data","Origins","Origin Certificates","Origin Actions"]
+    assert wb.sheetnames[:5]==["Summary","All Data","Origins","Origin Certificates","Origin Actions"]
+    assert "Edge TLS" in wb.sheetnames and "Edge Hostnames" in wb.sheetnames
     assert [c.value for c in wb["All Data"][1]]==_HEADERS
     assert [c.value for c in wb["Origin Actions"][1]]==_ACTION_HEADERS
     assert [c.value for c in wb["Origin Certificates"][1]]==_CERT_HEADERS

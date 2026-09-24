@@ -38,16 +38,16 @@ async def download_xlsx(task_id: str, request: Request, _=Depends(require_auth))
     json_path = info.get("json_path", "")
     xlsx_path = info.get("xlsx_path", "")
     path = Path(xlsx_path) if xlsx_path else None
-    has_origins = False
+    has_evidence = False
     if json_path and Path(json_path).is_file():
         try:
             with open(json_path, encoding="utf-8") as stream:
                 data = json.load(stream)
-            has_origins = bool(data.get("origin_inventory"))
+            has_evidence = isinstance(data, dict) and "report" in data
         except (OSError, ValueError):
             logger.exception("Could not load report evidence for download")
             raise HTTPException(status_code=500, detail="Report evidence could not be read.")
-    if not has_origins:
+    if not has_evidence:
         if not path or not path.is_file():
             raise HTTPException(status_code=404, detail="Excel file not found")
         return FileResponse(path=path, filename=path.name,
@@ -61,7 +61,7 @@ async def download_xlsx(task_id: str, request: Request, _=Depends(require_auth))
         await run_in_threadpool(generate_excel, json_path, str(export_path))
     except Exception:
         export_path.unlink(missing_ok=True)
-        logger.exception("Could not prepare updated origin findings export")
+        logger.exception("Could not prepare updated audit export")
         raise HTTPException(status_code=500, detail="Excel export could not be prepared. Please retry.")
     return FileResponse(
         path=export_path,
