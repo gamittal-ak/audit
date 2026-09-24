@@ -19,7 +19,7 @@ import redis.asyncio as aioredis
 from app.config import get_settings
 from app.services.audit_log import event
 from app.services.rate_limit import (
-    AkamaiRateLimiter, api_scope, is_waf_rate_block, quota_delay, retry_after_delay,
+    EDGEGRID_SCOPES, AkamaiRateLimiter, api_scope, is_waf_rate_block, quota_delay, retry_after_delay,
 )
 
 from app.services.edgegrid_auth import EdgeGridAuth
@@ -83,7 +83,7 @@ class AkamaiClient:
                 await self._limiter.acquire(scope)
                 resp = await self._client.request(
                     method, self._url(path), params=params, json=json_body,
-                    headers=headers or (_PAPI_HEADERS if scope == 'papi' else _REPORT_HEADERS),
+                    headers=headers or (_PAPI_HEADERS if scope in EDGEGRID_SCOPES else _REPORT_HEADERS),
                 )
                 await self._limiter.observe(scope, resp)
                 waf_block = is_waf_rate_block(resp)

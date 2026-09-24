@@ -136,7 +136,7 @@ def test_configuration_cannot_exceed_safe_caps():
             Settings(_env_file=None, **{field: value})
 
 
-@pytest.mark.parametrize('path,scope', [('/papi/v1/groups','papi'), ('/hapi/v1/edge-hostnames','papi'), ('/cps/v2/enrollments','papi'),
+@pytest.mark.parametrize('path,scope', [('/papi/v1/groups','papi'), ('/hapi/v1/edge-hostnames','hapi'), ('/cps/v2/enrollments','cps'),
     ('/reporting-api/v2/reports/delivery/traffic/current/data','reporting'),
     ('/identity-management/v3/api-clients/self/account-switch-keys','identity')])
 def test_every_api_family_is_paced(path, scope):
@@ -218,6 +218,19 @@ def test_server_headers_can_lower_but_never_raise_budget():
         assert int(await l.redis.get(key)) == 1500
         await limiters[1].observe('papi',httpx.Response(200,headers={'X-RateLimit-Limit':'5000'}))
         assert int(await l.redis.get(key)) == 1500
+    run(redis_case(check))
+
+
+def test_cps_limit_header_does_not_slow_papi():
+    async def check(limiters):
+        l = limiters[0]
+        await l.observe('cps',httpx.Response(200,headers={'X-RateLimit-Limit':'35'}))
+        assert int(await l.redis.get(l.prefix + ':cps:interval')) == 2143
+        assert await l.redis.get(l.prefix + ':papi:interval') is None
+        await l.acquire('papi')
+        started = time.monotonic()
+        await limiters[1].acquire('papi')
+        assert time.monotonic()-started < 1.2  # 750 ms PAPI spacing, not 2143 ms
     run(redis_case(check))
 
 

@@ -47,9 +47,15 @@ return interval
 """
 
 
+# HAPI and CPS advertise their own, lower limits (CPS: 35/minute). Separate
+# scopes keep those headers from slowing PAPI; the global cap still covers all.
+EDGEGRID_SCOPES = ('papi', 'hapi', 'cps')
+
+
 def api_scope(path):
-    if path.startswith(('/papi/', '/hapi/', '/cps/')):
-        return 'papi'
+    for scope in EDGEGRID_SCOPES:
+        if path.startswith(f'/{scope}/'):
+            return scope
     if path.startswith('/reporting-api/'):
         return 'reporting'
     return 'identity'
@@ -122,6 +128,8 @@ class AkamaiRateLimiter:
         self.global_interval = math.ceil(1000 / settings.akamai_global_requests_per_second)
         self.intervals = {
             'papi': math.ceil(60000 / settings.papi_requests_per_minute),
+            'hapi': math.ceil(60000 / settings.papi_requests_per_minute),
+            'cps': math.ceil(60000 / (35 * 0.8)),
             'reporting': math.ceil(60000 / settings.reporting_requests_per_minute),
             'identity': 2000,
         }
@@ -155,7 +163,7 @@ class AkamaiRateLimiter:
             logger.info('Akamai %s rate headers: %s', scope, relevant)
             self._seen_headers.add(scope)
         # Never increase our configured budget based on a burst-capacity header.
-        header = 'x-ratelimit-limit' if scope == 'papi' else 'akamai-sync-ratelimit-limit'
+        header = 'x-ratelimit-limit' if scope in EDGEGRID_SCOPES else 'akamai-sync-ratelimit-limit'
         limit = _number(headers.get(header))
         if limit is not None and limit > 0:
             interval = max(self.intervals[scope], math.ceil(60000 / (limit * 0.8)))

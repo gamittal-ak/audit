@@ -15,7 +15,10 @@ Sources:
 - https://techdocs.akamai.com/reporting/reference/rate-limiting
 
 HAPI (edge hostname inventory) and CPS (certificate enrollments and deployments)
-requests are paced under the PAPI budget. Each is fetched once per audit.
+have their own budgets: HAPI at the PAPI rate, CPS at 28/minute (80% of the 35/minute
+CPS advertises). Their rate headers only slow their own family, and the 2/second
+global cap covers all of them. Each is fetched once per audit. Until September 24
+they shared the PAPI budget, and the CPS header slowed all PAPI traffic to 28/minute.
 
 The Redis limiter coordinates FastAPI, both Celery worker processes, every account,
 and both credential sections. Each HTTP attempt acquires a slot, including retries

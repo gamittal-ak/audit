@@ -11,9 +11,10 @@ production and staging. Draft versions are not part of the TLS inventory.
 | `certProvisioningType`, `certStatus` | PAPI property hostnames (bucket properties via paginated active hostnames) | Certificate type (CPS managed, Default DV, ...) and per-network status |
 | Enrollments and deployments | CPS, every contract visible in PAPI groups | Deployed certificate names; HTTP-only evidence |
 
-HAPI and CPS requests use the conservative PAPI pacing budget (see
-`RATE_LIMITS.md`). The HAPI inventory is fetched once per audit; CPS enrollments
-and deployments are fetched once per audit before properties are analysed.
+HAPI and CPS requests have their own rate budgets (HAPI at the PAPI rate, CPS at
+28/minute) under the shared global cap; see `RATE_LIMITS.md`. The HAPI inventory is
+fetched once per audit; CPS enrollments and deployments are fetched once per audit
+before properties are analysed.
 
 ## Rules
 
