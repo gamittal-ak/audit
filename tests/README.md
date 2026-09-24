@@ -21,7 +21,16 @@ the UI.
 
 Compact layout review: checked desktop widths 1024-1920, tablet 800, and mobile
 390 pixels, plus sticky report controls. The synthetic origin table starts at
-487px instead of 749px at a 1440px viewport.
+487px instead of 749px at a 1440px viewport. The September 24 density pass
+shortened the synthetic report page from 3433px to 2937px at 1440px and history
+rows from about 80px to 50px, with no content or controls removed.
+
+Edge TLS checks (`test_edge_security.py`, `test_edge_certificates.py`) cover
+sTLS/eTLS and shared-certificate classification, legacy reports, per-network
+coverage, CPS parsing, wildcard matching, null SNI name lists, contracts outside
+the API client's access, and every case that must never become HTTP-only.
+Pivot checks (`test_pivots.py`) cover distinct cache IDs, sources, record counts,
+grand totals, empty sources, and text-only labels.
 
 Live activity checks cover task isolation, bounded storage and expiry, activity
 store outages, task outcomes, authenticated polling, HTML escaping, report cleanup,

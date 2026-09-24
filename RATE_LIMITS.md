@@ -14,6 +14,9 @@ Sources:
 - https://techdocs.akamai.com/reporting/reference/delivery-traffic-current
 - https://techdocs.akamai.com/reporting/reference/rate-limiting
 
+HAPI (edge hostname inventory) and CPS (certificate enrollments and deployments)
+requests are paced under the PAPI budget. Each is fetched once per audit.
+
 The Redis limiter coordinates FastAPI, both Celery worker processes, every account,
 and both credential sections. Each HTTP attempt acquires a slot, including retries
 and retries after removing unauthorized CP codes. Requests are spaced evenly, with

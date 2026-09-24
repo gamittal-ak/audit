@@ -55,10 +55,13 @@ celery -A app.tasks.celery_app worker --concurrency=2 --loglevel=info
 **Component responsibilities:**
 - `app/main.py` — FastAPI app init, middleware, template/static mounts, router registration
 - `app/routers/` — Thin HTTP handlers; delegate to services/tasks
-- `app/services/akamai_client.py` — All Akamai PAPI/Reporting API calls
+- `app/services/akamai_client.py` — All Akamai PAPI, HAPI, CPS and Reporting API calls
+- `app/services/edge_security.py` — Edge TLS classification per property and network (sTLS/eTLS, certificate type, shared certificate, coverage); see `EDGE_TLS.md`
+- `app/services/edge_certificates.py` — CPS enrollment/deployment inventory used as HTTPS and HTTP-only evidence
 - `app/services/property_analysis.py` — Pure analysis functions (no I/O); detects advanced overrides, custom behaviors, Site Shield, SRO, CloudWrapper
 - `app/tasks/report_task.py` — Celery task orchestrating the full audit: fetch properties → analyze → write Excel/JSON
-- `app/services/excel_service.py` — Excel report generation (openpyxl/xlsxwriter)
+- `app/services/excel_service.py` — Excel report generation (openpyxl/xlsxwriter), including Edge TLS and Edge Hostnames sheets
+- `app/services/pivot_service.py` — Native, refreshable Excel PivotTables (`Pivot - TLS`, `Pivot - Certificates`, `Pivot - Origin Findings`)
 
 ## Configuration
 
