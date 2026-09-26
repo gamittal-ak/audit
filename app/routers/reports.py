@@ -359,6 +359,7 @@ async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
                 "origin_findings_summary": report_data.get("origin_findings_summary", {}),
                 "audit_timestamp": report_data.get("audit_timestamp", ""),
                 "edge_security_summary": report_data.get("edge_security_summary", {}),
+                "edge_certificate_coverage": report_data.get("edge_certificate_coverage", {}),
             },
         )
 

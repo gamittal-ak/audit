@@ -356,8 +356,6 @@ def _build_summary_sheet(wb, data):
     total_edge = 0.0
     total_origin = 0.0
     total_midgress = 0.0
-    offload_sum = 0.0
-    offload_count = 0
     cache_hit_sum = 0.0
     cache_hit_count = 0
     expiring_certs = []
@@ -386,9 +384,6 @@ def _build_summary_sheet(wb, data):
                     total_origin += float(traffic["originBytes"])
                 if traffic.get("midgressBytes"):
                     total_midgress += float(traffic["midgressBytes"])
-                if traffic.get("bytesOffload"):
-                    offload_sum += float(traffic["bytesOffload"])
-                    offload_count += 1
                 if traffic.get("cacheHitPct"):
                     cache_hit_sum += float(traffic["cacheHitPct"])
                     cache_hit_count += 1
@@ -396,9 +391,6 @@ def _build_summary_sheet(wb, data):
             if cert_exp and _is_cert_expiring_soon(cert_exp, 30):
                 expiring_certs.append(prop.get("name", "unknown"))
 
-    avg_offload = (
-        round(offload_sum / offload_count, 2) if offload_count else 0
-    )
     avg_cache_hit = (
         round(cache_hit_sum / cache_hit_count, 2) if cache_hit_count else 0
     )
@@ -412,7 +404,6 @@ def _build_summary_sheet(wb, data):
         ("Total Edge GB", round(total_edge, 2)),
         ("Total Origin GB", round(total_origin, 2)),
         ("Total Midgress GB", round(total_midgress, 2)),
-        ("Average Offload %", avg_offload),
         ("Average Cache Hit %", avg_cache_hit),
         ("Properties with SRO", sro_count),
         ("Properties with Adv Override", adv_override_count),

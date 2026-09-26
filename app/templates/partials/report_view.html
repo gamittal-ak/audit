@@ -2,17 +2,18 @@
 {% set all_props = report | map(attribute='properties') | sum(start=[]) %}
 {% set total_cpcodes = all_props | map(attribute='cpcodes') | sum(start=[]) | length %}
 {% set total_hostnames = all_props | map(attribute='hostnames') | sum(start=[]) | length %}
-{% set ns = namespace(edge=0, offload=0, count=0, edge_warnings=0) %}
+{% set ns = namespace(edge=0, edge_warnings=0) %}
 {% for p in all_props %}
   {% for cp in p.cpcodes %}
     {% if cp.traffic %}
       {% set ns.edge = ns.edge + (cp.traffic.edgeBytes or 0) %}
-      {% if cp.traffic.bytesOffload is number %}{% set ns.offload = ns.offload + cp.traffic.bytesOffload %}{% set ns.count = ns.count + 1 %}{% endif %}
     {% endif %}
   {% endfor %}
   {% if p.cert_expiry_days is number and p.cert_expiry_days <= 30 %}{% set ns.edge_warnings = ns.edge_warnings + 1 %}{% endif %}
 {% endfor %}
 {% set oc = origin_coverage or {} %}
+{% set ecc = edge_certificate_coverage or {} %}
+{% set ecc_n = ecc.get('enrollments') %}
 {% set fs = origin_findings_summary | default({}) %}
 <div class="report-heading">
   <div><h1>{{ account_name }}</h1><p><span class="badge bg-success me-2">Complete</span>{% if audit_timestamp %}As of {{ audit_timestamp | replace('T',' ') | replace('Z',' UTC') | replace('+00:00',' UTC') }}{% else %}Account configuration, traffic, and certificate findings{% endif %}</p></div>
@@ -24,7 +25,7 @@
   <div class="metric"><div class="metric-value">{{ total_cpcodes }}</div><div class="metric-label">CP Code entries</div></div>
   <div class="metric"><div class="metric-value">{{ total_hostnames }}</div><div class="metric-label">Hostnames</div></div>
   <div class="metric"><div class="metric-value">{{ "%.1f"|format(ns.edge) }} <span class="metric-unit">GB</span></div><div class="metric-label">Edge traffic</div></div>
-  <div class="metric"><div class="metric-value">{{ "%.1f"|format(ns.offload / ns.count) ~ '%' if ns.count else '—' }}</div><div class="metric-label">Average offload</div></div>
+  <div class="metric"{% if ecc %} title="{{ ecc_n }} CPS enrollment{{ '' if ecc_n == 1 else 's' }} visible across {{ ecc.get('contracts', 0) }} contracts{% if ecc.get('inaccessible_contracts') %}; {{ ecc.get('inaccessible_contracts') }} of {{ ecc.get('contracts', 0) }} contracts are outside this API client's CPS access, so the account total is higher{% endif %}"{% endif %}><div class="metric-value">{% if ecc_n is none or (not ecc.get('complete') and not ecc_n) %}—{% elif ecc.get('complete') %}{{ ecc_n }}{% else %}{{ ecc_n }}+{% endif %}</div><div class="metric-label">Edge certificates{% if ecc and not ecc.get('complete') %} ({{ 'partial' if ecc_n else 'unavailable' }}){% endif %}</div></div>
 </div>
 <div class="warning-strip">
   {% if ns.edge_warnings %}
