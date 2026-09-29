@@ -179,6 +179,14 @@ class AkamaiClient:
                 self._get("/hapi/v1/edge-hostnames", {"accountSwitchKey": switch_key}))
         return await self._edge_security_tasks[switch_key]
 
+    # Account-scoped catalogs: one call each per account, no contract or
+    # group parameter. Used to resolve behaviorId/overrideId to names.
+    async def get_custom_behaviors(self, switch_key: str) -> dict:
+        return await self._get("/papi/v1/custom-behaviors", {"accountSwitchKey": switch_key})
+
+    async def get_custom_overrides(self, switch_key: str) -> dict:
+        return await self._get("/papi/v1/custom-overrides", {"accountSwitchKey": switch_key})
+
     async def get_active_hostnames(self, switch_key, contract_id, group_id, property_id):
         rows, offset = [], 0
         while True:

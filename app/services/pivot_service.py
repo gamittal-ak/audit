@@ -131,3 +131,10 @@ def build_audit_pivots(wb, data):
     add_count_pivot(wb, findings, "Pivot - Origin Findings", "Severity", "Network",
                     "Finding ID", "Grouped findings",
                     "Counts grouped findings once per finding/certificate/deployment group. Repeated rule references are retained in Origin Actions and are not added to this count.")
+    # Skipped when the sheet holds only its sentinel row. Half of all sampled
+    # accounts have no advanced metadata, and a pivot over an empty range opens
+    # as a repair prompt in Excel.
+    if data.get("_advanced_metadata_rows") and "Advanced Metadata" in wb.sheetnames:
+        add_count_pivot(wb, wb["Advanced Metadata"], "Pivot - Advanced Metadata",
+                        "Type", "Group Name", "Property ID", "Occurrences",
+                        "Counts occurrences, not distinct behaviors: a custom behavior used in four rules counts four times. Distinct counts are on the Summary sheet and in the Custom Behavior Catalog.")

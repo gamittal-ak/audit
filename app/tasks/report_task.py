@@ -30,7 +30,9 @@ from app.services.origin_cert_service import (
     assess_origin,
     generate_recommendations,
 )
+from app.services.custom_metadata import build_catalog_usage, fetch_catalog
 from app.services.property_analysis import (
+    collect_advanced_metadata,
     has_adv_override,
     has_custom_override,
     count_custom_behaviors,
@@ -79,7 +81,7 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
     xlsx_path = folder / f"report_{safe_name}_{timestamp}.xlsx"
 
     final_report: Dict[str, Any] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "audit_timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "report": [],
         "origin_inventory": [],
@@ -450,6 +452,21 @@ async def _async_run_report(task, switch_key: str, account_name: str, traffic_da
 
         final_report = prepare_origin_report(final_report)
 
+        # ---- Account custom metadata catalog ---------------------------
+        _progress(task, "Fetching account custom behavior catalog", 89)
+        catalog = await fetch_catalog(client, switch_key)
+        catalog = build_catalog_usage(catalog, final_report["report"])
+        final_report["custom_metadata_catalog"] = catalog
+        summary = catalog["summary"]
+        if summary["empty"]:
+            event("No advanced or custom metadata found in this account.")
+        else:
+            event(
+                f"Found {summary['catalog_size']} custom behaviors, "
+                f"{summary['in_use']} in use across "
+                f"{summary['properties_with_advanced_metadata']} properties."
+            )
+
         # ---- Step 6: write JSON --------------------------------------------
         _progress(task, "Writing JSON report", 90)
         with open(json_path, "w", encoding="utf-8") as f:
@@ -561,11 +578,16 @@ async def _process_property(
         # ---- Existing analysis (unchanged) ----
         cpcode_list, site_shield, custom_ss, client_chars, content_chars, origin_chars = \
             read_cpcode_list(rule_tree, switch_key)
-        adv_override = has_adv_override(rule_tree)
-        custom_override = has_custom_override(rule_tree)
-        custom_behavior_count = count_custom_behaviors(rule_tree)
+        advanced_metadata = collect_advanced_metadata(rule_tree)
+        adv_counts = advanced_metadata["counts"]
+        # Legacy keys stay populated so nothing downstream breaks
+        # mid-migration. Deprecated; removed in a later release.
+        adv_override = advanced_metadata["advanced_override"]["present"]
+        custom_override = bool(advanced_metadata["custom_override"])
+        custom_behavior_count = adv_counts["custom_behavior_uses"]
         origin_hosts = origin_hostnames(rule_tree)
-        sro = has_sro(rule_tree)
+        # Reuses the walk above rather than re-searching the tree.
+        sro = has_sro(rule_tree, advanced_metadata)
         cw_qr = has_cw_qr(rule_tree)
         complexity = rule_tree_complexity(rule_tree)
         min_tls = extract_tls_settings(rule_tree)
@@ -753,6 +775,10 @@ async def _process_property(
             "cpcodes": cpcodes_out,
             "hostnames": hostnames_out,
             "edge_security": edge_security,
+            "advanced_metadata": {
+                k: v for k, v in advanced_metadata.items()
+                if not k.startswith("_")
+            },
             "adv_override_exists": adv_override,
             "custom_override_exists": custom_override,
             "count_custom_behavior": custom_behavior_count,

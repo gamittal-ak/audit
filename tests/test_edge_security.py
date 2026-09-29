@@ -176,4 +176,4 @@ def test_excel_has_network_rows_and_keeps_saved_evidence(tmp_path):
     assert {row[4] for row in rows[1:]}=={"PRODUCTION","STAGING"}
     assert all(row[6]=="Unknown" for row in rows[1:])
     assert source.read_bytes()==before
-    assert wb["All Data"].max_column==47
+    assert wb["All Data"].max_column==51

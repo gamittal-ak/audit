@@ -87,9 +87,13 @@ window.AuditUI = (() => {
       const match = matches(fields.map(f => f.value).join(' '), words);
       const visible = match && (!selectedGroup || item.group.dataset.groupIndex === selectedGroup) && isTLSMatch(item,tlsFilter)
         && (!cert || selectedSecurity(item).some(s => s.certificate_types.includes(cert)))
-        && (!finding || (finding === 'edge' ? item.el.dataset.edgeWarning === 'true' :
-          selectedSecurity(item).some(s => s.status !== 'inactive' &&
-            (!s.hostnames.length || s.hostnames.some(h => h.protocol === 'Unknown' || h.protocol.includes('unknown'))))));
+        && (!finding || ({
+          'edge': () => item.el.dataset.edgeWarning === 'true',
+          'advanced': () => Number(item.el.dataset.advBehaviors || 0) > 0,
+          'custom-behaviors': () => Number(item.el.dataset.customBehaviors || 0) > 0,
+          'https-unknown': () => selectedSecurity(item).some(s => s.status !== 'inactive' &&
+            (!s.hostnames.length || s.hostnames.some(h => h.protocol === 'Unknown' || h.protocol.includes('unknown'))))
+        }[finding] || (() => true))());
       item.el.hidden = !visible;
       item.match = words.length ? fields.find(f => words.some(word => fold(f.value).includes(word))) : null;
       const hint = item.el.querySelector('.property-match');
@@ -148,8 +152,13 @@ window.AuditUI = (() => {
   function expandGroups(open) { groups.filter(group => !group.hidden).forEach(group => setGroup(group, open)); }
   function filterOrigins(control) {
     const panel = control.closest('.origin-panel');
-    const words = tokens(panel.querySelector('.origin-search').value);
-    const status = panel.querySelector('.origin-filter').value;
+    // .origin-panel is the shared panel style, not a promise of a toolbar:
+    // the advanced metadata sections use it for layout and have no search box.
+    const search = panel?.querySelector('.origin-search');
+    const filter = panel?.querySelector('.origin-filter');
+    if (!search || !filter) return;
+    const words = tokens(search.value);
+    const status = filter.value;
     const rows = [...panel.querySelectorAll('[data-origin-row]')];
     let count = 0;
     rows.forEach(row => {

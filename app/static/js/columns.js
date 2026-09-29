@@ -1,8 +1,10 @@
 function showColPicker(tabId, type) {
   const picker = document.getElementById(tabId + '-col-picker');
   if (!picker) return;
-  picker.querySelector('.col-picker-cp').classList.toggle('d-none', type !== 'cp');
-  picker.querySelector('.col-picker-hn').classList.toggle('d-none', type !== 'hn');
+  ['cp', 'hn', 'am'].forEach(function(name) {
+    const section = picker.querySelector('.col-picker-' + name);
+    if (section) section.classList.toggle('d-none', type !== name);
+  });
 }
 
 function toggleCol(tabId, type, colIdx, show) {
@@ -45,6 +47,6 @@ function onlyCol(tabId, type, colIdx) {
 document.addEventListener('shown.bs.tab', function(e) {
   const btn = e.target;
   const target = btn.getAttribute('data-bs-target') || '';
-  const match = target.match(/^#(prop-\d+-\d+)-(cp|hn)$/);
+  const match = target.match(/^#(prop-\d+-\d+)-(cp|hn|am)$/);
   if (match) showColPicker(match[1], match[2]);
 });

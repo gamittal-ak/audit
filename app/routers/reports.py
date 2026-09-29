@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.auth import require_auth
+from app.services.custom_metadata import prepare_metadata_report
 from app.services.origin_findings import prepare_origin_report
 from app.services.edge_security import prepare_edge_report
 from app.services.audit_log import log_key, read_activity, MAX_ENTRIES
@@ -319,7 +320,9 @@ async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
         report_data = {}
         try:
             with open(json_path, "r", encoding="utf-8") as f:
-                report_data = prepare_edge_report(prepare_origin_report(json.load(f)))
+                report_data = prepare_metadata_report(
+                    prepare_edge_report(prepare_origin_report(json.load(f)))
+                )
             report = report_data.get("report", [])
         except Exception:
             logger.exception("Could not load report JSON from %s", json_path)
@@ -360,6 +363,9 @@ async def get_status(task_id: str, request: Request, _=Depends(require_auth)):
                 "audit_timestamp": report_data.get("audit_timestamp", ""),
                 "edge_security_summary": report_data.get("edge_security_summary", {}),
                 "edge_certificate_coverage": report_data.get("edge_certificate_coverage", {}),
+                "custom_metadata_catalog": report_data.get("custom_metadata_catalog", {}),
+                "advanced_metadata_available": report_data.get(
+                    "advanced_metadata_available", False),
             },
         )
 

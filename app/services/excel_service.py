@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.services.custom_metadata import prepare_metadata_report
 from app.services.origin_findings import prepare_origin_report
 from app.services.edge_security import prepare_edge_report
 from app.services.pivot_service import build_audit_pivots
@@ -43,7 +44,9 @@ _HEADERS = [
     "Hostname Cert Issuer", "Hostname Cert Serial", "Hostname Cert Version",
     "Property Cert Expiry", "Property Cert Expiry Days", "Property Cert Type",
     "Property Cert Issuer", "Min TLS Version", "SRO", "Site Shield",
-    "Advanced Override", "Custom Override", "Custom Behavior Count", "CW/QR",
+    "Advanced Behaviors", "Advanced Matches",
+    "Custom Behavior Uses", "Distinct Custom Behaviors",
+    "Advanced Override", "Custom Override", "Off-Position Overrides", "CW/QR",
     "Total Rules", "Max Depth", "Behavior Count", "Last Activated", "Activated By",
 ]
 
@@ -81,7 +84,9 @@ _ACTION_HEADERS = [
 
 def generate_excel(json_path: str, xlsx_path: str) -> str:
     with open(json_path, "r", encoding="utf-8") as f:
-        data = prepare_edge_report(prepare_origin_report(json.load(f)))
+        data = prepare_metadata_report(
+            prepare_edge_report(prepare_origin_report(json.load(f)))
+        )
 
     wb = Workbook()
     ws = wb.active
@@ -141,6 +146,8 @@ def generate_excel(json_path: str, xlsx_path: str) -> str:
     _build_origin_actions_sheet(wb, data)
 
     _build_edge_sheets(wb, data)
+    _build_advanced_metadata_sheet(wb, data)
+    _build_catalog_sheet(wb, data)
     build_audit_pivots(wb, data)
 
     wb.save(xlsx_path)
@@ -183,12 +190,30 @@ def _prop_flags(prop):
         ", ".join(str(x) for x in cw_qr)
         if isinstance(cw_qr, list) else str(cw_qr)
     )
+    # Absent for reports saved before schema 4. Those audits never looked,
+    # so every cell stays blank: a filtered column must never imply a
+    # measured zero.
+    metadata = prop.get("advanced_metadata")
+    counts = metadata.get("counts", {}) if isinstance(metadata, dict) else {}
+
+    def count(key):
+        return counts.get(key, "") if counts else ""
+
+    off_position = ""
+    if counts:
+        off_position = (counts.get("advanced_override_nested", 0)
+                        + counts.get("custom_override_nested", 0))
+
     return [
         prop.get("sro", ""),
         prop.get("site_shield", ""),
-        prop.get("adv_override_exists", ""),
-        prop.get("custom_override_exists", ""),
-        prop.get("count_custom_behavior", ""),
+        count("advanced_behaviors"),
+        count("advanced_matches"),
+        count("custom_behavior_uses"),
+        count("custom_behaviors_distinct"),
+        count("advanced_override"),
+        count("custom_override"),
+        off_position,
         cw_qr_str,
         prop.get("total_rules", ""),
         prop.get("max_depth", ""),
@@ -344,6 +369,56 @@ def _is_cert_expiring_soon(expiry_str: str, days: int = 30) -> bool:
     return False
 
 
+def _advanced_metadata_summary(data):
+    """The one surface where a measured zero is the right answer.
+
+    The block is explicitly a tally, so every row is present for every
+    account. Reports saved before schema 4 show a dash for the whole block
+    instead, because they never looked.
+    """
+    header = ("-- Advanced Metadata --", "")
+    note = ("Note", "Advanced behaviors and overrides are read-only in Property "
+                    "Manager; changes require your Akamai account team.")
+    if not data.get("advanced_metadata_available"):
+        return [header, ("Advanced metadata", _NOT_COLLECTED), note]
+
+    catalog = data.get("custom_metadata_catalog") or {}
+    summary = catalog.get("summary") or {}
+    uses = distinct = overrides = nested = 0
+    for group in data.get("report") or []:
+        for prop in group.get("properties") or []:
+            metadata = prop.get("advanced_metadata")
+            counts = metadata.get("counts", {}) if isinstance(metadata, dict) else {}
+            uses += counts.get("custom_behavior_uses", 0)
+            distinct += counts.get("custom_behaviors_distinct", 0)
+            overrides += counts.get("advanced_override", 0)
+            nested += (counts.get("advanced_override_nested", 0)
+                       + counts.get("custom_override_nested", 0))
+
+    rows = [
+        header,
+        ("Properties with advanced metadata", summary.get("properties_with_advanced_metadata", 0)),
+        ("Advanced behaviors (uses / distinct)",
+         f"{summary.get('advanced_behavior_uses', 0)} / {summary.get('advanced_behavior_distinct', 0)}"),
+        ("Advanced matches", summary.get("advanced_match_uses", 0)),
+        ("Custom behaviors (uses / distinct)", f"{uses} / {distinct}"),
+        ("Custom behaviors defined for the account", summary.get("catalog_size", 0)),
+        ("Custom behaviors defined but unused", summary.get("unused", 0)),
+        ("Properties with an advanced override", overrides),
+        ("Properties with a custom override", summary.get("properties_with_custom_override", 0)),
+        ("Custom overrides defined for the account", summary.get("override_catalog_size", 0)),
+        ("Custom overrides defined but unused", summary.get("overrides_unused", 0)),
+        ("Overrides found off their legal position", nested),
+    ]
+    for slot, label in (("behaviors", "Custom behavior"), ("overrides", "Custom override")):
+        state = catalog.get(slot) or {}
+        if state.get("accessible") is False:
+            rows.append((f"{label} catalog",
+                         f"Not visible to this API client ({state.get('error')})"))
+    rows.append(note)
+    return rows
+
+
 # ------------------------------------------------------------------ Summary
 
 def _build_summary_sheet(wb, data):
@@ -406,8 +481,9 @@ def _build_summary_sheet(wb, data):
         ("Total Midgress GB", round(total_midgress, 2)),
         ("Average Cache Hit %", avg_cache_hit),
         ("Properties with SRO", sro_count),
-        ("Properties with Adv Override", adv_override_count),
         ("Properties with Site Shield", site_shield_count),
+        ("", ""),
+    ] + _advanced_metadata_summary(data) + [
         ("", ""),
         ("-- Origin Certificate Summary --", ""),
         ("Audit collection time (UTC)", data.get("audit_timestamp", "Unknown")),
@@ -713,3 +789,158 @@ def _build_edge_sheets(wb, data):
                 if isinstance(cell.value, str):
                     cell.data_type = "s"
                 cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+
+# ------------------------------------------------- advanced metadata sheets
+
+_METADATA_HEADERS = [
+    "Group Name", "Property Name", "Property ID", "Version", "Type",
+    "Name / Description", "Identifier", "Rule Path", "Position",
+    "XML Characters", "Editable in Property Manager",
+]
+
+_CATALOG_HEADERS = [
+    "Identifier", "Kind", "Name", "Description", "Status", "Sharing Level",
+    "Last Updated By", "Last Updated", "Properties Using", "Total Uses", "In Use",
+]
+
+_NOT_COLLECTED = "Rerun this audit to collect advanced metadata."
+_NONE_FOUND = "No advanced or custom metadata found in this account."
+
+# Read-only in Property Manager means only the Akamai account team can change
+# it. That is the single most useful thing this sheet tells a reader.
+_EDITABLE = {
+    "Advanced behavior": "No - Akamai only",
+    "Advanced match": "No - Akamai only",
+    "Advanced override": "No - Akamai only",
+    "Custom behavior": "Insert/remove only",
+    "Custom override": "Select/remove only",
+}
+
+
+def _catalog_names(data):
+    catalog = data.get("custom_metadata_catalog") or {}
+    names = {}
+    for key in ("custom_behaviors", "custom_overrides"):
+        for entry in catalog.get(key) or []:
+            names[entry.get("id", "")] = entry.get("name", "")
+    return names
+
+
+def _metadata_rows(data):
+    """One row per occurrence, yielded rather than accumulated.
+
+    Row count scales with the account: a handful for a small one, hundreds for
+    Tubi, plausibly five figures for a large one.
+    """
+    names = _catalog_names(data)
+    for group in data.get("report") or []:
+        group_name = group.get("groupname", "")
+        for prop in group.get("properties") or []:
+            metadata = prop.get("advanced_metadata")
+            if not isinstance(metadata, dict):
+                continue
+            prop_name = prop.get("name", "")
+            prop_id = prop.get("id", "")
+            version = prop.get("productionVersion") or prop.get("latestVersion") or ""
+
+            def row(kind, label, identifier, rule_path, position, chars):
+                return [
+                    group_name, prop_name, prop_id, version, kind, label,
+                    identifier, rule_path, position, chars, _EDITABLE[kind],
+                ]
+
+            for item in metadata.get("advanced_behaviors") or []:
+                yield row("Advanced behavior", item.get("description", ""), "",
+                          item.get("rule_path", ""), "", item.get("xml_chars", 0))
+            for item in metadata.get("advanced_matches") or []:
+                yield row("Advanced match", item.get("description", ""), "",
+                          item.get("rule_path", ""), "", item.get("xml_chars", 0))
+            for item in metadata.get("custom_behaviors") or []:
+                identifier = item.get("behavior_id") or ""
+                yield row("Custom behavior", names.get(identifier, ""), identifier,
+                          item.get("rule_path", ""), "", "")
+            for item in metadata.get("advanced_override_occurrences") or []:
+                yield row("Advanced override", "", "", item.get("rule_path", ""),
+                          item.get("position", ""), item.get("xml_chars", 0))
+            for item in metadata.get("custom_override_occurrences") or []:
+                identifier = item.get("override_id") or ""
+                yield row("Custom override", item.get("name") or names.get(identifier, ""),
+                          identifier, item.get("rule_path", ""),
+                          item.get("position", ""), "")
+
+
+def _build_advanced_metadata_sheet(wb, data):
+    ws = wb.create_sheet("Advanced Metadata")
+    ws.append(_METADATA_HEADERS)
+
+    empty = True
+    written = 0
+    if data.get("advanced_metadata_available"):
+        for row in _metadata_rows(data):
+            ws.append(row)
+            written += 1
+            empty = False
+    # Read by build_audit_pivots; a pivot over an empty range makes Excel open
+    # with a repair prompt.
+    data["_advanced_metadata_rows"] = written
+
+    if empty:
+        # An empty sheet with a sentence reads as an answer; a missing sheet
+        # reads as a broken export.
+        note = _NONE_FOUND if data.get("advanced_metadata_available") else _NOT_COLLECTED
+        ws.append([note] + [""] * (len(_METADATA_HEADERS) - 1))
+        ws.cell(row=2, column=1).font = Font(italic=True)
+
+    _format_origin_sheet(ws, _METADATA_HEADERS, "AdvancedMetadataTable")
+
+
+def _catalog_rows(catalog, key, kind):
+    for entry in catalog.get(key) or []:
+        yield [
+            entry.get("id", ""), kind, entry.get("name", ""),
+            entry.get("description", ""), entry.get("status", ""),
+            entry.get("sharing_level", ""), entry.get("updated_by", ""),
+            entry.get("updated_date", ""), entry.get("property_count", 0),
+            entry.get("use_count", 0),
+            "Yes" if entry.get("use_count") else "No",
+        ]
+
+
+def _build_catalog_sheet(wb, data):
+    ws = wb.create_sheet("Custom Behavior Catalog")
+    ws.append(_CATALOG_HEADERS)
+
+    catalog = data.get("custom_metadata_catalog") or {}
+    written = 0
+    if data.get("advanced_metadata_available"):
+        for row in _catalog_rows(catalog, "custom_behaviors", "Custom behavior"):
+            ws.append(row)
+            written += 1
+        # The override half is not filler: Tubi has 24 to Fox DTC zero.
+        overrides = list(_catalog_rows(catalog, "custom_overrides", "Custom override"))
+        if overrides:
+            if written:
+                ws.append([""] * len(_CATALOG_HEADERS))
+            for row in overrides:
+                ws.append(row)
+                written += 1
+
+    if not written:
+        note = _NONE_FOUND if data.get("advanced_metadata_available") else _NOT_COLLECTED
+        ws.append([note] + [""] * (len(_CATALOG_HEADERS) - 1))
+        ws.cell(row=2, column=1).font = Font(italic=True)
+
+    _format_origin_sheet(ws, _CATALOG_HEADERS, "CustomBehaviorCatalogTable")
+
+    # A denied catalog is not an empty catalog, and the sheet has to say which.
+    for slot, label in (("behaviors", "Custom behaviors"), ("overrides", "Custom overrides")):
+        state = catalog.get(slot) or {}
+        if state.get("accessible") is False:
+            ws.append([""] * len(_CATALOG_HEADERS))
+            ws.append([
+                f"{label}: catalog not visible to this API client "
+                f"({state.get('error')}). Per-property counts are still "
+                "accurate; behaviors are shown by ID instead of by name."
+            ] + [""] * (len(_CATALOG_HEADERS) - 1))
+            ws.cell(row=ws.max_row, column=1).font = Font(italic=True)

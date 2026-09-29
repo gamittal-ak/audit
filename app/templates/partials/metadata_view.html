@@ -1,0 +1,191 @@
+{# Advanced metadata section. Four states, per plan 5.2d: populated, nothing to
+   show, catalog not visible to this API client, and not collected. A report
+   saved before schema 4 must never render a measured-looking zero. #}
+{% set catalog = custom_metadata_catalog | default({}) %}
+{% set summary = catalog.get('summary', {}) %}
+{% set behaviors_state = catalog.get('behaviors', {}) %}
+{% set overrides_state = catalog.get('overrides', {}) %}
+{% set behaviors_denied = behaviors_state.get('accessible') == false %}
+{% set overrides_denied = overrides_state.get('accessible') == false %}
+{# A denied catalog is not an empty one, so the clean bill below must not claim
+   nothing exists when we were never allowed to look. #}
+{% set denied = behaviors_denied or overrides_denied %}
+
+{% if not advanced_metadata_available %}
+<div class="surface empty-state"><i class="bi bi-braces-asterisk" aria-hidden="true"></i><strong>Advanced metadata was not collected</strong><p>This report predates advanced metadata auditing. Rerun this audit to collect it.</p></div>
+{% elif summary.get('empty') and not denied %}
+<div class="surface empty-state"><i class="bi bi-check2-circle" aria-hidden="true"></i><strong>No advanced or custom metadata was found in this account</strong><p>Nothing in these properties depends on read-only Akamai metadata.</p></div>
+{% else %}
+
+{% if behaviors_denied %}
+<div class="alert alert-warning" role="note"><i class="bi bi-eye-slash me-2" aria-hidden="true"></i>The account <strong>custom behavior</strong> catalog is not visible to this API client ({{ behaviors_state.get('error') }}). Per-property counts are still accurate; behaviors are shown by ID instead of by name.</div>
+{% endif %}
+{% if overrides_denied %}
+<div class="alert alert-warning" role="note"><i class="bi bi-eye-slash me-2" aria-hidden="true"></i>The account <strong>custom override</strong> catalog is not visible to this API client ({{ overrides_state.get('error') }}). Per-property counts are still accurate; overrides are shown by ID instead of by name.</div>
+{% endif %}
+
+<div class="origin-stats" aria-label="Advanced metadata coverage">
+{% for label, value in [
+    ('Properties with advanced metadata', summary.get('properties_with_advanced_metadata', 0)),
+    ('Advanced behavior uses', summary.get('advanced_behavior_uses', 0)),
+    ('Custom behaviors defined', summary.get('catalog_size', 0)),
+    ('Defined but unused', summary.get('unused', 0)),
+    ('Custom overrides defined', summary.get('override_catalog_size', 0)),
+    ('Properties with a custom override', summary.get('properties_with_custom_override', 0))] %}
+<div class="origin-stat"><strong>{{ value }}</strong>{{ label }}</div>
+{% endfor %}</div>
+
+<nav class="origin-jumps" aria-label="Jump to advanced metadata details">
+<a id="metadata-behaviors-tab" href="#metadata-behaviors" data-scroll-target="metadata-behaviors">Custom behaviors <span class="tab-count">{{ catalog.get('custom_behaviors', []) | length }}</span></a>
+<a id="metadata-advanced-tab" href="#metadata-advanced" data-scroll-target="metadata-advanced">Advanced behaviors <span class="tab-count">{{ catalog.get('advanced_behavior_groups', []) | length }}</span></a>
+<a id="metadata-overrides-tab" href="#metadata-overrides" data-scroll-target="metadata-overrides">Overrides <span class="tab-count">{{ catalog.get('custom_overrides', []) | length }}</span></a>
+</nav>
+
+<div class="origin-sections">
+
+{# ---- a. custom behavior catalog ---- #}
+<section class="origin-panel" id="metadata-behaviors" aria-labelledby="metadata-behaviors-tab" tabindex="0">
+  <div class="section-heading"><div><h3>Custom behavior catalog</h3><p>A custom behavior is a reusable metadata block defined once for the account and inserted into rules by reference. You can insert or remove it; only your Akamai account team can edit the block itself.</p></div></div>
+  {% if catalog.get('custom_behaviors') %}
+  <div class="table-responsive" tabindex="0" role="region" aria-label="Custom behavior catalog">
+    <table class="table table-sm table-hover mb-0 small">
+      <thead class="table-dark"><tr><th>Behavior</th><th>Identifier</th><th>Status</th><th class="text-end">Properties</th><th class="text-end">Uses</th><th>Where it is used</th></tr></thead>
+      <tbody>
+      {% for entry in catalog.get('custom_behaviors', []) %}
+        <tr class="{{ '' if entry.use_count else 'text-muted' }}">
+          <td><strong>{{ entry.name or entry.id }}</strong>
+            {% if entry.description %}<div class="text-muted">{{ entry.description }}</div>{% endif %}
+            {% if entry.get('synthetic') %}<span class="badge bg-warning text-dark mt-1">Referenced but not in the account catalog</span>{% endif %}
+          </td>
+          <td class="font-monospace">{{ entry.id }}</td>
+          <td>{% if entry.status %}<span class="badge {{ 'bg-success' if entry.status == 'ACTIVE' else 'bg-secondary' }}">{{ entry.status }}</span>{% else %}&mdash;{% endif %}</td>
+          <td class="text-end">{{ entry.property_count }}</td>
+          <td class="text-end">{{ entry.use_count }}</td>
+          <td>
+            {% if entry.use_count %}
+            <details class="finding-details"><summary>{{ entry.property_count }} {{ 'property' if entry.property_count == 1 else 'properties' }}</summary>
+              <ul class="finding-references">
+              {% for use in entry.properties[:50] %}
+                <li><a href="#prop-card-{{ use.id }}">{{ use.name }}</a> &middot; {{ use.uses }} {{ 'use' if use.uses == 1 else 'uses' }}</li>
+              {% endfor %}
+              </ul>
+              {% if entry.properties | length > 50 %}<p class="small text-muted">+{{ entry.properties | length - 50 }} more &mdash; see the Excel workbook.</p>{% endif %}
+              {% if entry.updated_by or entry.updated_date %}<p class="small text-muted">Last updated{% if entry.updated_by %} by {{ entry.updated_by }}{% endif %}{% if entry.updated_date %} on {{ entry.updated_date[:10] }}{% endif %}{% if entry.xml_chars %} &middot; {{ entry.xml_chars }} characters of XML{% endif %}{% if entry.sharing_level %} &middot; Shared at {{ entry.sharing_level }} level{% endif %}</p>{% endif %}
+            </details>
+            {% else %}
+            <span class="badge bg-light text-dark" title="Defined for the account but referenced by no audited property">Unused</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted small mb-0">No custom behaviors are defined for this account.</p>
+  {% endif %}
+</section>
+
+{# ---- b. advanced behaviors, grouped by description ---- #}
+<section class="origin-panel" id="metadata-advanced" aria-labelledby="metadata-advanced-tab" tabindex="0">
+  <div class="section-heading"><div><h3>Advanced behaviors</h3><p>Raw XML metadata added to one rule by Akamai Professional Services. Read-only in Property Manager; changes require your Akamai account team. Grouped by description, because Akamai does not assign advanced behaviors an ID, so this grouping is a convenience and not an identity.</p></div></div>
+  {% if catalog.get('advanced_behavior_groups') %}
+  <div class="table-responsive" tabindex="0" role="region" aria-label="Advanced behaviors grouped by description">
+    <table class="table table-sm table-hover mb-0 small">
+      <thead class="table-dark"><tr><th>Description</th><th class="text-end">Properties</th><th class="text-end">Uses</th><th>Where it is used</th></tr></thead>
+      <tbody>
+      {% for entry in catalog.get('advanced_behavior_groups', []) %}
+        <tr>
+          <td><strong>{{ entry.description }}</strong></td>
+          <td class="text-end">{{ entry.property_count }}</td>
+          <td class="text-end">{{ entry.use_count }}</td>
+          <td>
+            <details class="finding-details"><summary>{{ entry.property_count }} {{ 'property' if entry.property_count == 1 else 'properties' }}</summary>
+              <ul class="finding-references">
+              {% for use in entry.properties[:50] %}
+                <li><a href="#prop-card-{{ use.id }}">{{ use.name }}</a> &middot; {{ use.uses }} {{ 'use' if use.uses == 1 else 'uses' }}</li>
+              {% endfor %}
+              </ul>
+              {% if entry.properties | length > 50 %}<p class="small text-muted">+{{ entry.properties | length - 50 }} more &mdash; see the Excel workbook.</p>{% endif %}
+            </details>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted small mb-0">No advanced behaviors were found in the audited rule trees.</p>
+  {% endif %}
+</section>
+
+{# ---- c. overrides ---- #}
+{% set ov = namespace(props=[]) %}
+{% for group in report %}{% for prop in group.properties %}
+  {% set metadata = prop.advanced_metadata %}
+  {% if metadata and metadata.get('advanced_override_occurrences') %}
+    {% set ov.props = ov.props + [{'id': prop.id, 'name': prop.name, 'occurrences': metadata.get('advanced_override_occurrences')}] %}
+  {% endif %}
+{% endfor %}{% endfor %}
+<section class="origin-panel" id="metadata-overrides" aria-labelledby="metadata-overrides-tab" tabindex="0">
+  <div class="section-heading"><div><h3>Overrides</h3><p>An advanced override is one XML block on the default rule that runs after all other rules. A custom override is a reusable override object applied at the very end of the rule tree. Both are read-only: you can select or remove them, not edit them.</p></div></div>
+
+  <h4 class="h6 mt-3">Advanced overrides <span class="tab-count">{{ ov.props | length }}</span></h4>
+  {% if ov.props %}
+  <div class="table-responsive" tabindex="0" role="region" aria-label="Properties with an advanced override">
+    <table class="table table-sm table-hover mb-0 small">
+      <thead class="table-dark"><tr><th>Property</th><th>Rule path</th><th>Position</th><th class="text-end">XML characters</th></tr></thead>
+      <tbody>
+      {% for item in ov.props %}{% for occurrence in item.occurrences %}
+        <tr>
+          <td><a href="#prop-card-{{ item.id }}">{{ item.name }}</a></td>
+          <td class="font-monospace">{{ occurrence.rule_path }}</td>
+          <td>{% if occurrence.position == 'default' %}<span class="badge bg-secondary">Default rule</span>{% else %}<span class="badge bg-warning text-dark" title="PAPI only allows an advanced override on the default rule. This one sits on a child rule and has to be converted before the property can be managed as code.">Child rule</span>{% endif %}</td>
+          <td class="text-end">{{ occurrence.xml_chars }}</td>
+        </tr>
+      {% endfor %}{% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted small mb-0">No property in this account carries an advanced override.</p>
+  {% endif %}
+
+  <h4 class="h6 mt-4">Custom overrides <span class="tab-count">{{ catalog.get('custom_overrides', []) | length }}</span></h4>
+  {% if catalog.get('custom_overrides') %}
+  <div class="table-responsive" tabindex="0" role="region" aria-label="Custom override catalog">
+    <table class="table table-sm table-hover mb-0 small">
+      <thead class="table-dark"><tr><th>Override</th><th>Identifier</th><th>Status</th><th class="text-end">Properties</th><th>Where it is used</th></tr></thead>
+      <tbody>
+      {% for entry in catalog.get('custom_overrides', []) %}
+        <tr class="{{ '' if entry.use_count else 'text-muted' }}">
+          <td><strong>{{ entry.name or entry.id }}</strong>
+            {% if entry.description %}<div class="text-muted">{{ entry.description }}</div>{% endif %}
+          </td>
+          <td class="font-monospace">{{ entry.id }}</td>
+          <td>{% if entry.status %}<span class="badge {{ 'bg-success' if entry.status == 'ACTIVE' else 'bg-secondary' }}">{{ entry.status }}</span>{% else %}&mdash;{% endif %}</td>
+          <td class="text-end">{{ entry.property_count }}</td>
+          <td>
+            {% if entry.use_count %}
+            <details class="finding-details"><summary>{{ entry.property_count }} {{ 'property' if entry.property_count == 1 else 'properties' }}</summary>
+              <ul class="finding-references">
+              {% for use in entry.properties[:50] %}<li><a href="#prop-card-{{ use.id }}">{{ use.name }}</a></li>{% endfor %}
+              </ul>
+              {% if entry.properties | length > 50 %}<p class="small text-muted">+{{ entry.properties | length - 50 }} more &mdash; see the Excel workbook.</p>{% endif %}
+            </details>
+            {% else %}
+            <span class="badge bg-light text-dark" title="Defined for the account but selected by no audited property">Unused</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted small mb-0">No custom overrides are defined for this account.</p>
+  {% endif %}
+</section>
+
+</div>
+{% endif %}

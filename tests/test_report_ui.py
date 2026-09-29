@@ -50,10 +50,53 @@ def report_context(legacy=False):
                         {"securityType":mode},network)
                     p["edge_security"][network] = dict(**summarize([h]), version=version)
     groups = prepare_groups(groups)
+    catalog = {} if legacy else attach_advanced_metadata(groups)
     return dict(request=None,account_name="Example Digital",task_id="demo",report=groups,
+       custom_metadata_catalog=catalog,advanced_metadata_available=not legacy,
        chart_json=json.dumps({"properties":[p for g in groups for p in g["properties"]]}),
        origin_coverage={} if legacy else dict(total_origins=60,probed=59,http_only=0,unreachable=1,skipped=0,unresolved=0,expired=1,expiring_30d=1,actions_critical=1,actions_warning=1),
        origin_inventory=[] if legacy else origins,origin_certificates=[] if legacy else certs,origin_actions=[] if legacy else actions)
+
+def rule(name, behaviors=None, children=None, **extra):
+    return dict(name=name, behaviors=behaviors or [], criteria=[], children=children or [], **extra)
+
+
+def custom_use(behavior_id):
+    return dict(name="customBehavior", options={"behaviorId": behavior_id})
+
+
+def catalog_row(identifier, name, description):
+    return dict(behaviorId=identifier, name=name, description=description, status="ACTIVE",
+                sharingLevel="ACCOUNT", xml="<x/>" * 20, updatedByUser="platform-eng",
+                updatedDate="2022-05-20T17:25:35Z", approvedByUser="platform-eng")
+
+
+def attach_advanced_metadata(groups):
+    """Walk synthetic rule trees, then join them against a synthetic catalog."""
+    from app.services.custom_metadata import _entry, build_catalog_usage
+    from app.services.property_analysis import collect_advanced_metadata
+    trees = {
+      "prp_1": {"rules": rule("default", [custom_use("cbe_1")], [
+          rule("Logging", [dict(name="advanced", options={"description":"Log Custom Details","xml":"<x/>"*40})]),
+          rule("Deny by Location", [custom_use("cbe_1"), custom_use("cbe_2")]),
+        ], advancedOverride="<override/>" * 200)},
+      "prp_2": {"rules": rule("default", [custom_use("cbe_2")])},
+      "prp_3": {"rules": rule("default")},
+    }
+    for group in groups:
+        for prop in group["properties"]:
+            metadata = collect_advanced_metadata(trees.get(prop["id"], {}))
+            metadata["version_audited"] = str(prop["productionVersion"])
+            prop["advanced_metadata"] = {k: v for k, v in metadata.items() if not k.startswith("_")}
+    catalog = {"behaviors": {"accessible": True, "error": None},
+               "overrides": {"accessible": True, "error": None},
+               "custom_behaviors": [_entry(row, "behaviorId") for row in [
+                   catalog_row("cbe_1", "Change Response Status Code", "Change the response status code"),
+                   catalog_row("cbe_2", "Quick retry with ALT map", "Retry once against the alternate map"),
+                   catalog_row("cbe_3", "Legacy tracking pixel", "Kept for a retired campaign")]],
+               "custom_overrides": []}
+    return build_catalog_usage(catalog, groups)
+
 
 def renewal_context():
     from test_origin_lifecycle import saved_report
@@ -341,4 +384,111 @@ def test_tls_comparison_filters_and_complete_inline_details(browser,preview_serv
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
     page.screenshot(path="/tmp/audit-ui-redesign-mobile.png",full_page=True)
     assert not errors,errors
+    page.close()
+
+
+def metadata_context(state):
+    """The report context for one of the four states plan 5.2d requires."""
+    from app.services.custom_metadata import build_catalog_usage
+    context = report_context()
+    if state == "populated":
+        return context
+    if state == "not_collected":
+        context = report_context(legacy=True)
+        context["advanced_metadata_available"] = False
+        context["custom_metadata_catalog"] = {}
+        return context
+    # Nothing defined, nothing found: the clean bill.
+    for group in context["report"]:
+        for prop in group["properties"]:
+            prop["advanced_metadata"] = {"collected": True, "counts": {"total": 0}}
+    empty = {"behaviors": {"accessible": True, "error": None},
+             "overrides": {"accessible": True, "error": None},
+             "custom_behaviors": [], "custom_overrides": []}
+    if state == "denied":
+        # An empty account AND a denied catalog. The notice has to win, or the
+        # page claims nothing exists when we were never allowed to look.
+        empty["behaviors"] = {"accessible": False, "error": "HTTP 403"}
+    context["custom_metadata_catalog"] = build_catalog_usage(empty, context["report"])
+    return context
+
+
+def test_advanced_metadata_renders_each_of_the_four_states():
+    populated = ENV.get_template("partials/report_view.html").render(**metadata_context("populated"))
+    assert 'id="metadata-panel"' in populated
+    assert "Custom behavior catalog" in populated
+    assert "Change Response Status Code" in populated
+    assert "Log Custom Details" in populated
+    # Defined for the account, referenced by nothing.
+    assert "Legacy tracking pixel" in populated and "Unused" in populated
+    # Grouping caveat must travel with the table it describes.
+    assert "Akamai does not assign advanced behaviors an ID" in populated
+    assert "No custom overrides are defined for this account" in populated
+
+    not_collected = ENV.get_template("partials/report_view.html").render(**metadata_context("not_collected"))
+    assert "Rerun this audit to collect it." in not_collected
+    assert "Advanced metadata: rerun to collect" in not_collected
+    assert "Custom behavior catalog" not in not_collected
+    # Never a measured-looking zero on a report that never looked.
+    assert "No advanced or custom metadata was found" not in not_collected
+
+    empty = ENV.get_template("partials/report_view.html").render(**metadata_context("empty"))
+    assert "No advanced or custom metadata was found in this account" in empty
+    assert "Custom behavior catalog" not in empty
+
+    denied = ENV.get_template("partials/report_view.html").render(**metadata_context("denied"))
+    assert "not visible to this API client (HTTP 403)" in denied
+    assert "Per-property counts are still accurate" in denied
+    assert "No advanced or custom metadata was found in this account" not in denied
+
+
+def test_advanced_metadata_section_navigates_filters_and_links(browser, preview_server):
+    page = browser.new_page(viewport={"width": 1440, "height": 1000}, ignore_https_errors=True)
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.goto(preview_server + "/report/demo")
+    page.wait_for_selector("#metadata-panel")
+
+    page.click("#metadata-tab")
+    assert page.locator("#metadata-panel").is_visible()
+    assert page.locator("#metadata-behaviors tbody tr").count() == 3
+    # Most used first, defined-but-unused last.
+    assert "Legacy tracking pixel" in page.locator("#metadata-behaviors tbody tr").last.inner_text()
+    assert page.locator("#metadata-behaviors .badge", has_text="Unused").count() == 1
+    assert page.locator("#metadata-advanced tbody tr").count() == 1
+    assert "No custom overrides are defined" in page.locator("#metadata-overrides").inner_text()
+    # One advanced override, on the default rule of one property.
+    assert page.locator("#metadata-overrides tbody tr").count() == 1
+
+    # The expander links back to the property card it names.
+    page.locator("#metadata-behaviors details summary").first.click()
+    assert page.locator('#metadata-behaviors a[href="#prop-card-prp_1"]').count() >= 1
+    assert page.locator("#prop-card-prp_1").count() == 1
+
+    page.select_option("#propFinding", "advanced")
+    assert page.locator("[data-property]:visible").count() == 1
+    page.select_option("#propFinding", "custom-behaviors")
+    assert page.locator("[data-property]:visible").count() == 2
+    page.select_option("#propFinding", "")
+
+    page.select_option("#propSearchScope", "Advanced metadata")
+    page.fill("#propSearch", "Log Custom Details")
+    assert page.locator("[data-property]:visible").count() == 1
+    page.click("#propSearchClear")
+
+    # Badges: uses and distinct are different numbers and are labelled as such.
+    card = page.locator("#prop-card-prp_1")
+    card.locator("summary.property-summary").click()
+    badges = card.locator(".property-heading .badge").all_inner_texts()
+    assert any("1 Advanced" == text for text in badges)
+    assert any("3 Custom" in text and "2 distinct" in text for text in badges)
+    assert "Adv Override" in badges
+    detail = card.locator('[id$="-am"]').inner_text()
+    assert "Advanced behavior" in detail and "No" in detail
+    assert "Insert/remove only" in detail
+    assert "characters of XML" in detail
+
+    page.set_viewport_size({"width": 390, "height": 844})
+    assert page.locator("#metadata-panel").is_visible()
+    assert not errors
     page.close()

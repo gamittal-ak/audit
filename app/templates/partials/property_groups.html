@@ -1,3 +1,10 @@
+{% set am_catalog = custom_metadata_catalog | default({}) %}
+{# id -> name, so a property card can show what a behaviour id actually is.
+   Empty when the account catalog was not visible; the id then stands in. #}
+{% set am_names = {} %}
+{% for am_entry in am_catalog.get('custom_behaviors', []) + am_catalog.get('custom_overrides', []) %}
+{% set _ = am_names.update({am_entry.id: am_entry.name}) %}
+{% endfor %}
   <div class="accordion" id="groupAccordion">
   {% for group in report %}
   {% set g_idx = loop.index %}
@@ -27,16 +34,23 @@
           {% endif %}
 
           {% for prop in group.properties %}
+          {% set am = prop.advanced_metadata | default({}) %}
+          {% set amc = am.get('counts', {}) %}
           {% set fields = namespace(items=[{'label':'Property','value':prop.name ~ ' ' ~ prop.id}, {'label':'Group','value':group.groupname}]) %}
           {% for h in prop.hostnames %}{% set fields.items = fields.items + [{'label':'Hostname','value':(h.cnameFrom or h.name or '') ~ ' ' ~ (h.cnameTo or ''), 'tab':'hn'}] %}{% endfor %}
           {% for cp in prop.cpcodes %}{% set fields.items = fields.items + [{'label':'CP Code','value':cp.cpcode | join(' ') ~ ' ' ~ cp.description | join(' ') ~ ' ' ~ cp.product | join(' '), 'tab':'cp'}] %}{% endfor %}
           {% if prop.origin is string %}{% set fields.items = fields.items + [{'label':'Origin','value':prop.origin}] %}{% else %}{% for origin in prop.origin or [] %}{% set fields.items = fields.items + [{'label':'Origin','value':origin}] %}{% endfor %}{% endif %}
+          {% for item in am.get('advanced_behaviors', []) %}{% set fields.items = fields.items + [{'label':'Advanced metadata','value':'Advanced behavior ' ~ item.description ~ ' ' ~ item.rule_path, 'tab':'am'}] %}{% endfor %}
+          {% for item in am.get('advanced_matches', []) %}{% set fields.items = fields.items + [{'label':'Advanced metadata','value':'Advanced match ' ~ item.description ~ ' ' ~ item.rule_path, 'tab':'am'}] %}{% endfor %}
+          {% for item in am.get('custom_behaviors', []) %}{% set fields.items = fields.items + [{'label':'Advanced metadata','value':'Custom behavior ' ~ (am_names.get(item.behavior_id) or '') ~ ' ' ~ (item.behavior_id or '') ~ ' ' ~ item.rule_path, 'tab':'am'}] %}{% endfor %}
+          {% for item in am.get('advanced_override_occurrences', []) %}{% set fields.items = fields.items + [{'label':'Advanced metadata','value':'Advanced override ' ~ item.rule_path, 'tab':'am'}] %}{% endfor %}
+          {% for item in am.get('custom_override_occurrences', []) %}{% set fields.items = fields.items + [{'label':'Advanced metadata','value':'Custom override ' ~ (item.name or am_names.get(item.override_id) or '') ~ ' ' ~ item.override_id ~ ' ' ~ item.rule_path, 'tab':'am'}] %}{% endfor %}
           {% set security = prop.edge_security | default({}) %}
           {% for net, item in security.items() %}
             {% for h in item.hostnames %}{% set fields.items = fields.items + [{'label':'TLS','value':net ~ ' ' ~ h.hostname ~ ' ' ~ h.edge_hostname ~ ' ' ~ h.tls_mode ~ ' ' ~ h.certificate_type ~ ' ' ~ h.protocol}] %}{% endfor %}
           {% endfor %}
           {% set traffic = namespace(gb=0, available=false) %}{% for cp in prop.cpcodes %}{% if cp.traffic and cp.traffic.edgeBytes is number %}{% set traffic.gb = traffic.gb + cp.traffic.edgeBytes %}{% set traffic.available = true %}{% endif %}{% endfor %}
-          <details class="property-card" data-security='{{ security | tojson }}' data-name="{{ prop.name }}" data-hostnames="{{ prop.hostnames | length }}" data-traffic="{{ traffic.gb }}" data-property data-prop-id="{{ prop.id }}" data-fields='{{ fields.items | tojson }}' data-edge-warning="{{ 'true' if prop.cert_expiry_days is number and prop.cert_expiry_days <= 30 else 'false' }}">
+          <details class="property-card" id="prop-card-{{ prop.id }}" data-adv-behaviors="{{ amc.get('advanced_behaviors', 0) }}" data-custom-behaviors="{{ amc.get('custom_behavior_uses', 0) }}" data-security='{{ security | tojson }}' data-name="{{ prop.name }}" data-hostnames="{{ prop.hostnames | length }}" data-traffic="{{ traffic.gb }}" data-property data-prop-id="{{ prop.id }}" data-fields='{{ fields.items | tojson }}' data-edge-warning="{{ 'true' if prop.cert_expiry_days is number and prop.cert_expiry_days <= 30 else 'false' }}">
           <summary class="property-summary">
             <div class="property-identity"><span class="property-name">{{ prop.name }}</span><span class="property-id">{{ prop.id }}</span>{% if prop.cert_expiry_days is number and prop.cert_expiry_days <= 30 %}<span class="finding-dot" title="Edge certificate expired or due within 30 days">Certificate due</span>{% endif %}</div>
             {% for network in ['PRODUCTION','STAGING'] %}{% set item = security.get(network, {}) %}
@@ -70,14 +84,27 @@
               <div class="d-flex flex-wrap gap-1">
                 <span class="badge bg-primary">Prod v{{ prop.productionVersion or '—' }}</span>
                 <span class="badge bg-secondary">Stage v{{ prop.stagingVersion or '—' }}</span>
-                {% if prop.adv_override_exists %}
-                  <span class="badge bg-secondary">Adv Override</span>
-                {% endif %}
-                {% if prop.custom_override_exists %}
-                  <span class="badge bg-secondary">Custom Override</span>
-                {% endif %}
-                {% if prop.count_custom_behavior %}
-                  <span class="badge bg-info text-dark">{{ prop.count_custom_behavior }} Custom Behaviors</span>
+                {% if not advanced_metadata_available %}
+                  <span class="badge bg-light text-dark" title="This report predates advanced metadata auditing.">Advanced metadata: rerun to collect</span>
+                {% else %}
+                  {% if amc.get('advanced_behaviors') %}
+                    <span class="badge bg-warning text-dark" title="Raw XML metadata added to one rule by Akamai Professional Services. Read-only in Property Manager; changes require your Akamai account team.">{{ amc.get('advanced_behaviors') }} Advanced</span>
+                  {% endif %}
+                  {% if amc.get('advanced_matches') %}
+                    <span class="badge bg-warning text-dark" title="Raw XML match condition added to one rule by Akamai. Read-only in Property Manager.">{{ amc.get('advanced_matches') }} Advanced {{ 'match' if amc.get('advanced_matches') == 1 else 'matches' }}</span>
+                  {% endif %}
+                  {% if amc.get('custom_behavior_uses') %}
+                    <span class="badge bg-info text-dark" title="A reusable metadata block defined once for the account and inserted into rules by reference. Insert or remove it yourself; only Akamai can edit the block. Uses counts the rules that reference one; distinct counts the different behaviors referenced.">{{ amc.get('custom_behavior_uses') }} Custom &middot; {{ amc.get('custom_behaviors_distinct', 0) }} distinct</span>
+                  {% endif %}
+                  {% if am.get('advanced_override', {}).get('present') %}
+                    <span class="badge bg-secondary" title="One XML block on the default rule that runs after all other rules. Read-only; changes require your Akamai account team.">Adv Override</span>
+                  {% endif %}
+                  {% if amc.get('advanced_override_nested') %}
+                    <span class="badge bg-warning text-dark" title="PAPI only allows an advanced override on the default rule. These sit on child rules and have to be converted before the property can be managed as code.">{{ amc.get('advanced_override_nested') }} off-position {{ 'override' if amc.get('advanced_override_nested') == 1 else 'overrides' }}</span>
+                  {% endif %}
+                  {% if am.get('custom_override') %}
+                    <span class="badge bg-secondary" title="A reusable override object applied at the very end of the rule tree. Select or remove it yourself; only Akamai can edit the object.">Custom Override{% if am.get('custom_override', {}).get('name') %}: {{ am.get('custom_override', {}).get('name') }}{% endif %}</span>
+                  {% endif %}
                 {% endif %}
                 {% if prop.sro %}
                   <span class="badge bg-secondary">SRO</span>
@@ -163,6 +190,19 @@
                     <div class="dropdown-item small py-1 d-flex align-items-center justify-content-between pe-2">
                       <label class="mb-0 d-flex align-items-center flex-grow-1"><input type="checkbox" checked onchange="toggleCol('{{ tab_id }}','hn',{{ loop.index0 }},this.checked)" class="form-check-input me-2">{{ col }}</label>
                       <a href="#" class="text-muted only-link" onclick="onlyCol('{{ tab_id }}','hn',{{ loop.index0 }});return false" title="Show only this column">only</a>
+                    </div>
+                    {% endfor %}
+                  </div>
+                  <div class="col-picker-am">
+                    <div class="dropdown-header small fw-bold px-1 d-flex justify-content-between align-items-center">
+                      Advanced Metadata Columns
+                      <a href="#" class="text-primary small text-decoration-none" onclick="selectAllCols('{{ tab_id }}','am',true);return false">Select All</a>
+                    </div>
+                    {% set am_cols = ['Type','Name / description','Identifier','Rule path','Editable'] %}
+                    {% for col in am_cols %}
+                    <div class="dropdown-item small py-1 d-flex align-items-center justify-content-between pe-2">
+                      <label class="mb-0 d-flex align-items-center flex-grow-1"><input type="checkbox" checked onchange="toggleCol('{{ tab_id }}','am',{{ loop.index0 }},this.checked)" class="form-check-input me-2">{{ col }}</label>
+                      <a href="#" class="text-muted only-link" onclick="onlyCol('{{ tab_id }}','am',{{ loop.index0 }});return false" title="Show only this column">only</a>
                     </div>
                     {% endfor %}
                   </div>
@@ -276,6 +316,43 @@
                 </div>
                 {% else %}
                   <p class="text-muted small mb-0 p-2">No hostnames found.</p>
+                {% endif %}
+              </div>
+
+              {# Advanced metadata tab. XML is deliberately not rendered: it is
+                 long, unreadable in a table, and options.xml can carry internal
+                 detail. Size and location only. #}
+              <div class="property-data-section" id="{{ tab_id }}-am"><h4>Advanced metadata <span class="tab-count">{% if advanced_metadata_available %}{{ amc.get('total', 0) }}{% else %}&mdash;{% endif %}</span></h4>
+                {% if not advanced_metadata_available %}
+                  <p class="text-muted small mb-0 p-2">Rerun this audit to collect advanced metadata.</p>
+                {% elif not amc.get('total') %}
+                  <p class="text-muted small mb-0 p-2">No advanced or custom metadata in this configuration.</p>
+                {% else %}
+                <p class="small text-muted">Version {{ am.get('version_audited') or prop.productionVersion or '' }}. Read-only entries can only be changed by your Akamai account team.</p>
+                <div class="table-responsive" tabindex="0" role="region" aria-label="Property data table">
+                  <table class="table table-sm table-hover mb-0 small">
+                    <thead class="table-dark">
+                      <tr><th>Type</th><th>Name / description</th><th>Identifier</th><th>Rule path</th><th>Editable</th></tr>
+                    </thead>
+                    <tbody>
+                    {% for item in am.get('advanced_behaviors', []) %}
+                      <tr><td>Advanced behavior</td><td>{{ item.description }}</td><td class="text-muted">&mdash;</td><td class="font-monospace">{{ item.rule_path }}</td><td>No &mdash; Akamai only</td></tr>
+                    {% endfor %}
+                    {% for item in am.get('advanced_matches', []) %}
+                      <tr><td>Advanced match</td><td>{{ item.description }}</td><td class="text-muted">&mdash;</td><td class="font-monospace">{{ item.rule_path }}</td><td>No &mdash; Akamai only</td></tr>
+                    {% endfor %}
+                    {% for item in am.get('custom_behaviors', []) %}
+                      <tr><td>Custom behavior</td><td>{{ am_names.get(item.behavior_id) or '' }}</td><td class="font-monospace">{{ item.behavior_id or '' }}</td><td class="font-monospace">{{ item.rule_path }}</td><td>Insert/remove only</td></tr>
+                    {% endfor %}
+                    {% for item in am.get('advanced_override_occurrences', []) %}
+                      <tr><td>Advanced override{% if item.position != 'default' %} <span class="badge bg-warning text-dark" title="PAPI only allows an advanced override on the default rule.">off position</span>{% endif %}</td><td>{{ item.xml_chars }} characters of XML</td><td class="text-muted">&mdash;</td><td class="font-monospace">{{ item.rule_path }}</td><td>No &mdash; Akamai only</td></tr>
+                    {% endfor %}
+                    {% for item in am.get('custom_override_occurrences', []) %}
+                      <tr><td>Custom override</td><td>{{ item.name or am_names.get(item.override_id) or '' }}</td><td class="font-monospace">{{ item.override_id }}</td><td class="font-monospace">{{ item.rule_path }}</td><td>Select/remove only</td></tr>
+                    {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
                 {% endif %}
               </div>
 
