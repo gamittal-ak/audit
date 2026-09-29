@@ -861,13 +861,27 @@ def _metadata_rows(data):
                 yield row("Custom behavior", names.get(identifier, ""), identifier,
                           item.get("rule_path", ""), "", "")
             for item in metadata.get("advanced_override_occurrences") or []:
-                yield row("Advanced override", "", "", item.get("rule_path", ""),
+                # The override has no name or description in PAPI - it is a bare
+                # string on the default rule - so the label states what it is
+                # rather than leaving the cell empty or repeating XML Characters.
+                yield row("Advanced override", _override_label(item.get("position", "")),
+                          "", item.get("rule_path", ""),
                           item.get("position", ""), item.get("xml_chars", 0))
             for item in metadata.get("custom_override_occurrences") or []:
                 identifier = item.get("override_id") or ""
                 yield row("Custom override", item.get("name") or names.get(identifier, ""),
                           identifier, item.get("rule_path", ""),
                           item.get("position", ""), "")
+
+
+_OVERRIDE_LABEL = "Applies at the end of the rule tree"
+_OVERRIDE_OFF_POSITION_LABEL = (
+    "Off position - PAPI allows this only on the default rule"
+)
+
+
+def _override_label(position: str) -> str:
+    return _OVERRIDE_LABEL if position == "default" else _OVERRIDE_OFF_POSITION_LABEL
 
 
 def _build_advanced_metadata_sheet(wb, data):

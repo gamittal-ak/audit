@@ -345,7 +345,7 @@
                       <tr><td>Custom behavior</td><td>{{ am_names.get(item.behavior_id) or '' }}</td><td class="font-monospace">{{ item.behavior_id or '' }}</td><td class="font-monospace">{{ item.rule_path }}</td><td>Insert/remove only</td></tr>
                     {% endfor %}
                     {% for item in am.get('advanced_override_occurrences', []) %}
-                      <tr><td>Advanced override{% if item.position != 'default' %} <span class="badge bg-warning text-dark" title="PAPI only allows an advanced override on the default rule.">off position</span>{% endif %}</td><td>{{ item.xml_chars }} characters of XML</td><td class="text-muted">&mdash;</td><td class="font-monospace">{{ item.rule_path }}</td><td>No &mdash; Akamai only</td></tr>
+                      <tr><td>Advanced override{% if item.position != 'default' %} <span class="badge bg-warning text-dark" title="PAPI only allows an advanced override on the default rule.">off position</span>{% endif %}</td><td>{% if item.position == 'default' %}Applies at the end of the rule tree{% else %}Off position &mdash; PAPI allows this only on the default rule{% endif %}<span class="text-muted small"> &middot; {{ item.xml_chars }} characters</span></td><td class="text-muted">&mdash;</td><td class="font-monospace">{{ item.rule_path }}</td><td>No &mdash; Akamai only</td></tr>
                     {% endfor %}
                     {% for item in am.get('custom_override_occurrences', []) %}
                       <tr><td>Custom override</td><td>{{ item.name or am_names.get(item.override_id) or '' }}</td><td class="font-monospace">{{ item.override_id }}</td><td class="font-monospace">{{ item.rule_path }}</td><td>Select/remove only</td></tr>

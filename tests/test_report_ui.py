@@ -486,7 +486,10 @@ def test_advanced_metadata_section_navigates_filters_and_links(browser, preview_
     detail = card.locator('[id$="-am"]').inner_text()
     assert "Advanced behavior" in detail and "No" in detail
     assert "Insert/remove only" in detail
-    assert "characters of XML" in detail
+    # The advanced override has no name in PAPI; the cell says what it is
+    # rather than only how big it is.
+    assert "Applies at the end of the rule tree" in detail
+    assert "characters" in detail
 
     page.set_viewport_size({"width": 390, "height": 844})
     assert page.locator("#metadata-panel").is_visible()
