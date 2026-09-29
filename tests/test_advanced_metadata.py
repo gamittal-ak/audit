@@ -288,12 +288,12 @@ class FakeClient:
     async def get_custom_behaviors(self, switch_key):
         if self._behaviors_error:
             raise self._behaviors_error
-        return {"accountId": "act", "customBehaviors": self._behaviors}
+        return {"accountId": "act", "customBehaviors": {"items": self._behaviors}}
 
     async def get_custom_overrides(self, switch_key):
         if self._overrides_error:
             raise self._overrides_error
-        return {"accountId": "act", "customOverrides": self._overrides}
+        return {"accountId": "act", "customOverrides": {"items": self._overrides}}
 
 
 def forbidden():
@@ -318,6 +318,60 @@ def test_catalog_is_fetched_and_xml_is_measured_not_stored():
     assert "xml" not in entry
     assert entry["updated_by"] == "someuser"
     assert catalog["accessible"] is True
+
+
+def test_the_live_papi_items_envelope_is_read():
+    """PAPI serves {"customBehaviors": {"items": [...]}}, not a bare list.
+
+    The first deploy read the bare list this file's fake used to return, so every
+    real account came back "catalog not visible" and every behavior was shown by
+    ID. Pinned against the live response shape, not the fake's convenience.
+    """
+    class LiveShapeClient:
+        async def get_custom_behaviors(self, switch_key):
+            return {"accountId": "act", "customBehaviors":
+                    {"items": [catalog_row("cbe_1", "behaviorId", "Real Behavior")]}}
+
+        async def get_custom_overrides(self, switch_key):
+            return {"accountId": "act", "customOverrides":
+                    {"items": [catalog_row("cbo_1", "overrideId", "Real Override")]}}
+
+    catalog = asyncio.run(fetch_catalog(LiveShapeClient(), "sk"))
+
+    assert catalog["accessible"] is True
+    assert catalog["error"] is None
+    assert [e["name"] for e in catalog["custom_behaviors"]] == ["Real Behavior"]
+    assert [e["name"] for e in catalog["custom_overrides"]] == ["Real Override"]
+
+
+def test_an_empty_items_envelope_is_an_empty_catalog_not_a_failure():
+    class EmptyEnvelopeClient:
+        async def get_custom_behaviors(self, switch_key):
+            return {"accountId": "act", "customBehaviors": {"items": []}}
+
+        async def get_custom_overrides(self, switch_key):
+            return {"accountId": "act", "customOverrides": {"items": []}}
+
+    catalog = asyncio.run(fetch_catalog(EmptyEnvelopeClient(), "sk"))
+
+    assert catalog["accessible"] is True
+    assert catalog["custom_behaviors"] == []
+    assert catalog["custom_overrides"] == []
+
+
+def test_a_missing_items_key_is_still_a_failure():
+    class NoItemsClient:
+        async def get_custom_behaviors(self, switch_key):
+            return {"accountId": "act", "customBehaviors": {"total": 3}}
+
+        async def get_custom_overrides(self, switch_key):
+            return {"accountId": "act", "customOverrides": {"items": []}}
+
+    catalog = asyncio.run(fetch_catalog(NoItemsClient(), "sk"))
+
+    assert catalog["behaviors"]["accessible"] is False
+    assert catalog["overrides"]["accessible"] is True
+    assert catalog["accessible"] is False
 
 
 def test_the_two_catalogs_fail_independently():

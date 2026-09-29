@@ -65,6 +65,11 @@ async def fetch_catalog(client, switch_key: str) -> dict:
             # this one catalog instead of failing the whole audit.
             payload = await getattr(client, method)(switch_key)
             rows = payload.get(payload_key)
+            # PAPI wraps both catalogs in an {"items": [...]} envelope. Accept a
+            # bare list too: an empty catalog is served either way, and treating
+            # the envelope as unreadable marked every real account inaccessible.
+            if isinstance(rows, dict):
+                rows = rows.get("items")
             if not isinstance(rows, list):
                 raise ValueError("Invalid catalog payload")
             catalog[out_key] = [_entry(r, id_field) for r in rows if isinstance(r, dict)]
