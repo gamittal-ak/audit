@@ -16,6 +16,17 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 
 
+# Excel rejects a PivotTable cache item longer than 255 characters and silently
+# repairs the whole cache on open, dropping the pivot. Only the cached item text
+# is capped; record indices still key off the full worksheet values, so nothing
+# is renumbered and a refresh rereads the untouched cells.
+ITEM_LIMIT = 255
+
+
+def _item(value):
+    return value if len(value) <= ITEM_LIMIT else value[:ITEM_LIMIT - 1] + "…"
+
+
 def add_count_pivot(wb, source, title, row_field, col_field, measure, caption,
                     note, page_field=None):
     ws = wb.create_sheet(title)
@@ -41,7 +52,7 @@ def add_count_pivot(wb, source, title, row_field, col_field, measure, caption,
         cacheSource=CacheSource(type="worksheet", worksheetSource=WorksheetSource(
             ref=source.dimensions, sheet=source.title)),
         cacheFields=[CacheField(name=header, sharedItems=SharedItems(
-            _fields=[Text(v=v) for v in values], containsString=True,
+            _fields=[Text(v=_item(v)) for v in values], containsString=True,
             containsNonDate=True))
             for header, values in zip(headers, unique)],
         recordCount=len(rows), saveData=True, enableRefresh=True,
