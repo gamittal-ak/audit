@@ -401,7 +401,8 @@ def _advanced_metadata_summary(data):
         ("Advanced behaviors (uses / distinct)",
          f"{summary.get('advanced_behavior_uses', 0)} / {summary.get('advanced_behavior_distinct', 0)}"),
         ("Advanced matches", summary.get("advanced_match_uses", 0)),
-        ("Custom behaviors (uses / distinct)", f"{uses} / {distinct}"),
+        ("Custom behavior uses across all properties", uses),
+        ("Custom behaviors referenced, summed per property", distinct),
         ("Custom behaviors defined for the account", summary.get("catalog_size", 0)),
         ("Custom behaviors defined but unused", summary.get("unused", 0)),
         ("Properties with an advanced override", overrides),
@@ -866,12 +867,22 @@ def _metadata_rows(data):
                 # rather than leaving the cell empty or repeating XML Characters.
                 yield row("Advanced override", _override_label(item.get("position", "")),
                           "", item.get("rule_path", ""),
-                          item.get("position", ""), item.get("xml_chars", 0))
+                          _position_label(item.get("position", "")), item.get("xml_chars", 0))
             for item in metadata.get("custom_override_occurrences") or []:
                 identifier = item.get("override_id") or ""
                 yield row("Custom override", item.get("name") or names.get(identifier, ""),
                           identifier, item.get("rule_path", ""),
-                          item.get("position", ""), "")
+                          _position_label(item.get("position", "")), "")
+
+
+_POSITION_LABELS = {
+    "default": "Default rule (where PAPI expects it)",
+    "nested": "Child rule (off position - convert before Terraform)",
+}
+
+
+def _position_label(position: str) -> str:
+    return _POSITION_LABELS.get(position, position or "")
 
 
 _OVERRIDE_LABEL = "Applies at the end of the rule tree"

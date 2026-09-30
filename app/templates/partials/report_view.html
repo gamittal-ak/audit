@@ -44,7 +44,7 @@
 <nav class="report-sections" aria-label="Jump to report section">
   <a class="section-link active" id="properties-tab" href="#properties-panel" data-scroll-target="properties-panel">Configurations <span class="tab-count">{{ all_props | length }}</span></a>
   <a class="section-link" id="origins-tab" href="#origins-panel" data-scroll-target="origins-panel">Origins &amp; certificates <span class="tab-count">{{ oc.get('total_origins', '—') }}</span></a>
-  <a class="section-link" id="metadata-tab" href="#metadata-panel" data-scroll-target="metadata-panel">Advanced metadata <span class="tab-count">{% if advanced_metadata_available %}{{ msum.get('catalog_size', 0) }}{% else %}&mdash;{% endif %}</span></a>
+  <a class="section-link" id="metadata-tab" href="#metadata-panel" data-scroll-target="metadata-panel">Advanced metadata <span class="tab-count" title="Custom behaviors and custom overrides defined for this account. A configuration uses some of them; open one to see which.">{% if advanced_metadata_available %}{{ msum.get('catalog_size', 0) + msum.get('override_catalog_size', 0) }}{% else %}&mdash;{% endif %}</span></a>
   <a class="section-link" id="traffic-tab" href="#traffic-panel" data-scroll-target="traffic-panel">Traffic</a>
   <span class="section-hint"><i class="bi bi-arrow-down" aria-hidden="true"></i> One report · Scroll to explore</span>
 </nav>

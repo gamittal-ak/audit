@@ -1,4 +1,5 @@
 """Browser regressions against a local, synthetic report. Never calls audit APIs."""
+import re
 import copy
 import json
 import threading
@@ -476,15 +477,19 @@ def test_advanced_metadata_section_navigates_filters_and_links(browser, preview_
     assert page.locator("[data-property]:visible").count() == 1
     page.click("#propSearchClear")
 
-    # Badges: uses and distinct are different numbers and are labelled as such.
+    # Badges: distinct leads and uses follow, each labelled in words.
     card = page.locator("#prop-card-prp_1")
     card.locator("summary.property-summary").click()
     badges = card.locator(".property-heading .badge").all_inner_texts()
     assert any("1 Advanced" == text for text in badges)
-    assert any("3 Custom" in text and "2 distinct" in text for text in badges)
+    assert any("2 custom behaviors" in text and "3 uses" in text for text in badges)
     assert "Adv Override" in badges
     detail = card.locator('[id$="-am"]').inner_text()
     assert "Advanced behavior" in detail and "No" in detail
+    # The property count and the account-wide count are different measurements,
+    # so the section says outright how the two relate.
+    assert "entries" in card.locator('[id$="-am"] h4').inner_text()
+    assert re.search(r"references \d+ of the \d+ custom behaviors", detail)
     assert "Insert/remove only" in detail
     # The advanced override has no name in PAPI; the cell says what it is
     # rather than only how big it is.

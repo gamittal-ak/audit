@@ -79,8 +79,9 @@ def collect_advanced_metadata(rule_tree: dict) -> dict:
                 "rule_path": rule_path,
                 "override_id": str(node_custom.get("overrideId")),
                 "name": str(node_custom.get("name") or ""),
-                "position": "nested",
+                "position": "default" if len(path) == 1 else "nested",
             })
+            override_xml_values.append(str(node_custom))
 
         behaviors = node.get("behaviors")
         if isinstance(behaviors, list):
@@ -140,20 +141,34 @@ def collect_advanced_metadata(rule_tree: dict) -> dict:
     advanced_override = {"present": bool(override_xml), "xml_chars": len(override_xml)}
     nested_overrides = [o for o in override_occurrences if o["position"] == "nested"]
 
-    # customOverride belongs at the response root; occurrences found on a rule
-    # are kept too, for the same conversion-inventory reason.
-    raw_custom_override = rule_tree.get("customOverride")
+    # Live PAPI puts customOverride on the default rule, which sits inside the
+    # "rules" envelope, so the walk above has already recorded it there. Older
+    # handling looked on the envelope itself; both are accepted rather than
+    # traded for one another, since only one of the two can be observed at a
+    # time and a response carrying it on the envelope must not read as absent.
+    # Occurrences on deeper rules are kept too, for the conversion inventory.
     custom_override: Optional[dict] = None
-    if isinstance(raw_custom_override, dict) and raw_custom_override.get("overrideId"):
-        custom_override = {
-            "override_id": str(raw_custom_override.get("overrideId")),
-            "name": str(raw_custom_override.get("name") or ""),
-        }
-        custom_override_occurrences.insert(0, {
-            "rule_path": "", "override_id": custom_override["override_id"],
-            "name": custom_override["name"], "position": "root",
-        })
-        override_xml_values.append(str(raw_custom_override))
+    for occurrence in custom_override_occurrences:
+        if occurrence["position"] == "default":
+            custom_override = {
+                "override_id": occurrence["override_id"],
+                "name": occurrence["name"],
+            }
+            break
+    if custom_override is None:
+        envelope_override = rule_tree.get("customOverride")
+        if isinstance(envelope_override, dict) and envelope_override.get("overrideId"):
+            custom_override = {
+                "override_id": str(envelope_override.get("overrideId")),
+                "name": str(envelope_override.get("name") or ""),
+            }
+            custom_override_occurrences.insert(0, {
+                "rule_path": str(root.get("name") or "default"),
+                "override_id": custom_override["override_id"],
+                "name": custom_override["name"],
+                "position": "default",
+            })
+            override_xml_values.append(str(envelope_override))
 
     distinct = {b["behavior_id"] for b in custom_behaviors if b["behavior_id"]}
     counts = {
@@ -165,9 +180,11 @@ def collect_advanced_metadata(rule_tree: dict) -> dict:
         "custom_behaviors_distinct": len(distinct),
         "advanced_override": 1 if advanced_override["present"] else 0,
         "custom_override": 1 if custom_override else 0,
-        # Occurrences off their legal position. Zero on every account sampled,
-        # but counted rather than assumed, because a missed one is a property
-        # that silently cannot be moved to Terraform.
+        # Occurrences off their legal position: an advancedOverride or a
+        # customOverride on a child rule rather than the default one. Counted
+        # rather than assumed, because a missed one is a property that silently
+        # cannot be moved to Terraform. A customOverride on the default rule is
+        # where PAPI puts it and is not counted here.
         "advanced_override_nested": len(nested_overrides),
         "custom_override_nested": sum(
             1 for o in custom_override_occurrences if o["position"] == "nested"),

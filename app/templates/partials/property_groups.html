@@ -94,7 +94,7 @@
                     <span class="badge bg-warning text-dark" title="Raw XML match condition added to one rule by Akamai. Read-only in Property Manager.">{{ amc.get('advanced_matches') }} Advanced {{ 'match' if amc.get('advanced_matches') == 1 else 'matches' }}</span>
                   {% endif %}
                   {% if amc.get('custom_behavior_uses') %}
-                    <span class="badge bg-info text-dark" title="A reusable metadata block defined once for the account and inserted into rules by reference. Insert or remove it yourself; only Akamai can edit the block. Uses counts the rules that reference one; distinct counts the different behaviors referenced.">{{ amc.get('custom_behavior_uses') }} Custom &middot; {{ amc.get('custom_behaviors_distinct', 0) }} distinct</span>
+                    <span class="badge bg-info text-dark" title="A reusable metadata block defined once for the account and inserted into rules by reference. Insert or remove it yourself; only Akamai can edit the block. The first number is how many different behaviors this configuration references; the second is how many rules reference one, so a behavior used in four rules counts once and four times.">{{ amc.get('custom_behaviors_distinct', 0) }} custom {{ 'behavior' if amc.get('custom_behaviors_distinct', 0) == 1 else 'behaviors' }} &middot; {{ amc.get('custom_behavior_uses') }} {{ 'use' if amc.get('custom_behavior_uses') == 1 else 'uses' }}</span>
                   {% endif %}
                   {% if am.get('advanced_override', {}).get('present') %}
                     <span class="badge bg-secondary" title="One XML block on the default rule that runs after all other rules. Read-only; changes require your Akamai account team.">Adv Override</span>
@@ -322,13 +322,14 @@
               {# Advanced metadata tab. XML is deliberately not rendered: it is
                  long, unreadable in a table, and options.xml can carry internal
                  detail. Size and location only. #}
-              <div class="property-data-section" id="{{ tab_id }}-am"><h4>Advanced metadata <span class="tab-count">{% if advanced_metadata_available %}{{ amc.get('total', 0) }}{% else %}&mdash;{% endif %}</span></h4>
+              <div class="property-data-section" id="{{ tab_id }}-am"><h4>Advanced metadata <span class="tab-count" title="Entries in this configuration: advanced behaviors, advanced matches, custom behavior uses and overrides added together. The account-wide number in the top navigation counts something else - the behaviors the account defines.">{% if advanced_metadata_available %}{{ amc.get('total', 0) }} {{ 'entry' if amc.get('total', 0) == 1 else 'entries' }}{% else %}&mdash;{% endif %}</span></h4>
                 {% if not advanced_metadata_available %}
                   <p class="text-muted small mb-0 p-2">Rerun this audit to collect advanced metadata.</p>
                 {% elif not amc.get('total') %}
                   <p class="text-muted small mb-0 p-2">No advanced or custom metadata in this configuration.</p>
                 {% else %}
-                <p class="small text-muted">Version {{ am.get('version_audited') or prop.productionVersion or '' }}. Read-only entries can only be changed by your Akamai account team.</p>
+                {% set cb_catalog = am_catalog.get('custom_behaviors', []) | length %}
+                <p class="small text-muted">Version {{ am.get('version_audited') or prop.productionVersion or '' }}. Read-only entries can only be changed by your Akamai account team.{% if amc.get('custom_behaviors_distinct') and cb_catalog %} This configuration references {{ amc.get('custom_behaviors_distinct') }} of the {{ cb_catalog }} custom {{ 'behavior' if cb_catalog == 1 else 'behaviors' }} defined for this account.{% endif %}</p>
                 <div class="table-responsive" tabindex="0" role="region" aria-label="Property data table">
                   <table class="table table-sm table-hover mb-0 small">
                     <thead class="table-dark">

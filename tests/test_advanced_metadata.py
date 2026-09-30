@@ -149,6 +149,79 @@ def test_custom_override_is_read_from_the_response_root():
     assert result["counts"]["custom_override"] == 1
 
 
+def test_custom_override_on_the_default_rule_is_the_root_one():
+    """The shape live PAPI actually returns: customOverride inside "rules".
+
+    Every fixture here used to put it on the envelope, so the walk recorded it
+    as nested and nothing ever identified the root override. Four sampled
+    accounts carry it on the default rule and none on the envelope.
+    """
+    payload = tree(rule("default", customOverride={"overrideId": "cbo_9", "name": "Edge Override"}))
+    result = collect_advanced_metadata(payload)
+
+    assert result["custom_override"] == {"override_id": "cbo_9", "name": "Edge Override"}
+    assert result["counts"]["custom_override"] == 1
+    assert result["counts"]["custom_override_nested"] == 0
+    assert result["counts"]["custom_override_total"] == 1
+    assert [o["position"] for o in result["custom_override_occurrences"]] == ["default"]
+
+
+def test_custom_override_on_a_child_rule_is_off_position():
+    root = rule("default", children=[
+        rule("Child", customOverride={"overrideId": "cbo_9", "name": "Edge Override"}),
+    ])
+    result = collect_advanced_metadata(tree(root))
+
+    assert result["custom_override"] is None
+    assert result["counts"]["custom_override"] == 0
+    assert result["counts"]["custom_override_nested"] == 1
+    assert [o["position"] for o in result["custom_override_occurrences"]] == ["nested"]
+
+
+def test_custom_override_is_not_counted_twice_when_both_places_carry_it():
+    payload = tree(rule("default", customOverride={"overrideId": "cbo_9", "name": "Edge Override"}),
+                   customOverride={"overrideId": "cbo_9", "name": "Edge Override"})
+    result = collect_advanced_metadata(payload)
+
+    assert result["counts"]["custom_override_total"] == 1
+
+
+def test_saved_reports_have_their_override_positions_repaired():
+    """Reports written before the fix marked every occurrence nested. The
+    rule_path is enough to correct both surfaces without a re-audit."""
+    data = {
+        "schema_version": 4,
+        "custom_metadata_catalog": {
+            "custom_behaviors": [],
+            "custom_overrides": [{"id": "cbo_9", "name": "Edge Override", "use_count": 0,
+                                   "property_count": 0, "properties": []}],
+            "summary": {"properties_with_custom_override": 0, "overrides_in_use": 0,
+                        "overrides_unused": 1},
+        },
+        "report": [{"properties": [{
+            "id": "prp_1", "name": "one",
+            "advanced_metadata": {
+                "custom_override_occurrences": [
+                    {"rule_path": "default", "override_id": "cbo_9",
+                     "name": "Edge Override", "position": "nested"}],
+                "counts": {"custom_override": 0, "custom_override_nested": 1,
+                           "custom_override_total": 1},
+            }}]}],
+    }
+    prepared = prepare_metadata_report(data)
+    metadata = prepared["report"][0]["properties"][0]["advanced_metadata"]
+
+    assert metadata["custom_override_occurrences"][0]["position"] == "default"
+    assert metadata["custom_override"] == {"override_id": "cbo_9", "name": "Edge Override"}
+    assert metadata["counts"]["custom_override"] == 1
+    assert metadata["counts"]["custom_override_nested"] == 0
+    summary = prepared["custom_metadata_catalog"]["summary"]
+    assert summary["properties_with_custom_override"] == 1
+    assert summary["overrides_in_use"] == 1
+    assert summary["overrides_unused"] == 0
+    assert prepared["custom_metadata_catalog"]["custom_overrides"][0]["use_count"] == 1
+
+
 def test_custom_behavior_without_an_id_still_counts_as_a_use():
     root = rule("default", behaviors=[{"name": "customBehavior", "options": {}}])
     result = collect_advanced_metadata(tree(root))

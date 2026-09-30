@@ -211,6 +211,85 @@ def build_catalog_usage(catalog: dict, report_groups: list) -> dict:
     return catalog
 
 
+def _repair_override_positions(metadata: dict) -> None:
+    """Correct customOverride positions saved before the walker was fixed.
+
+    Every occurrence used to be recorded as "nested" and the one on the default
+    rule was never identified, so saved reports overstate off-position overrides
+    and never show the override itself. Both are derivable from the stored
+    rule_path, which the walk joins with "/" from the root rule down, so a path
+    with no separator is the default rule. Repairing here means existing reports
+    read correctly on the page and in the workbook without a re-audit.
+    """
+    occurrences = metadata.get("custom_override_occurrences")
+    if not isinstance(occurrences, list):
+        return
+    root = None
+    for occurrence in occurrences:
+        if not isinstance(occurrence, dict):
+            continue
+        occurrence["position"] = (
+            "nested" if "/" in str(occurrence.get("rule_path") or "") else "default")
+        if occurrence["position"] == "default" and root is None:
+            root = {
+                "override_id": occurrence.get("override_id", ""),
+                "name": occurrence.get("name", ""),
+            }
+    if root:
+        metadata["custom_override"] = root
+    counts = metadata.get("counts")
+    if isinstance(counts, dict):
+        counts["custom_override"] = 1 if root else 0
+        counts["custom_override_nested"] = sum(
+            1 for o in occurrences
+            if isinstance(o, dict) and o.get("position") == "nested")
+
+
+def _repair_override_usage(data: dict) -> None:
+    """Recount custom override usage after the positions are repaired.
+
+    build_catalog_usage() reads metadata["custom_override"], which the position
+    bug always left empty, so saved reports show every override as defined but
+    unused and no property carrying one. Counters are reset before recounting so
+    this stays correct if it runs more than once.
+    """
+    catalog = data.get("custom_metadata_catalog")
+    if not isinstance(catalog, dict):
+        return
+    overrides = catalog.get("custom_overrides")
+    if not isinstance(overrides, list) or not overrides:
+        return
+    by_id = {}
+    for entry in overrides:
+        if not isinstance(entry, dict):
+            continue
+        entry["use_count"] = 0
+        entry["property_count"] = 0
+        entry["properties"] = []
+        by_id[entry.get("id")] = entry
+    carrying = 0
+    for group in data.get("report") or []:
+        for prop in group.get("properties") or []:
+            metadata = prop.get("advanced_metadata")
+            if not isinstance(metadata, dict):
+                continue
+            override = metadata.get("custom_override")
+            if not override:
+                continue
+            carrying += 1
+            entry = by_id.get(override.get("override_id"))
+            if entry is not None:
+                _bump(entry, str(prop.get("id") or ""),
+                      str(prop.get("name") or ""), 1)
+    summary = catalog.get("summary")
+    if isinstance(summary, dict):
+        summary["properties_with_custom_override"] = carrying
+        summary["overrides_in_use"] = sum(
+            1 for e in overrides if isinstance(e, dict) and e.get("use_count"))
+        summary["overrides_unused"] = sum(
+            1 for e in overrides if isinstance(e, dict) and not e.get("use_count"))
+
+
 def prepare_metadata_report(data: dict) -> dict:
     """Display-time guard for reports saved before schema 4.
 
@@ -228,4 +307,11 @@ def prepare_metadata_report(data: dict) -> dict:
         for group in data.get("report") or []:
             for prop in group.get("properties") or []:
                 prop.pop("advanced_metadata", None)
+        return data
+    for group in data.get("report") or []:
+        for prop in group.get("properties") or []:
+            metadata = prop.get("advanced_metadata")
+            if isinstance(metadata, dict):
+                _repair_override_positions(metadata)
+    _repair_override_usage(data)
     return data
